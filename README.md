@@ -13,7 +13,16 @@
   <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
 </p>
 
-# Pi Monorepo
+# Pi Monorepo (MagCarta fork)
+
+This repository is the **MagCarta fork** of [pi-mono](https://github.com/badlogic/pi-mono). It serves as the base for MagCarta’s **first-party agent runtime** and tooling:
+
+- **C07 — Agent Runtime** (`@magcarta/agent-runtime`): First-party agent execution with native hook points for the Enforcement Gateway (C08m/C08f) and ADR emission (C13). Built from the **agent** package (pi-agent-core).
+- **C19 — Visual Agent Builder**: Prototype (C19p) and production (C19f) visual builder for non-technical users; produces Agent Manifests consumed by the Onboarding API (C06).
+
+Architecture, component decomposition, and implementation waves are defined in **[magcarta-metadata](https://github.com/magcarta/magcarta-metadata)**.
+
+---
 
 > **Looking for the pi coding agent?** See **[packages/coding-agent](packages/coding-agent)** for installation and usage.
 
