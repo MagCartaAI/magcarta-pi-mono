@@ -29,7 +29,7 @@ declare module "@mariozechner/pi-agent-core" {
 // ============================================================================
 
 const systemNotificationRenderer: MessageRenderer<SystemNotificationMessage> = {
-	render: (notification) => {
+	render: (notification: SystemNotificationMessage) => {
 		// notification is fully typed as SystemNotificationMessage!
 		return html`
 			<div class="px-4">
