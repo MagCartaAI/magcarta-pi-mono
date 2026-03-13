@@ -20,7 +20,7 @@ This repository is the **MagCarta fork** of [pi-mono](https://github.com/badlogi
 - **C07 — Agent Runtime** (`@magcarta/agent-runtime`): First-party agent execution with native hook points for the Enforcement Gateway (C08m/C08f) and ADR emission (C13). Built from the **agent** package (pi-agent-core). Governance is wired via [magcarta-gateway](https://github.com/magcarta/magcarta-gateway) (C08m) using the `GovernanceProvider` interface; decisions are logged via [magcarta-adr](https://github.com/magcarta/magcarta-adr) (C13a).
 - **C19 — Visual Agent Builder**: The prototype (C19p) lives in **[magcarta-builder](https://github.com/magcarta/magcarta-builder)**; it produces Agent Manifests consumed by [magcarta-onboarding](https://github.com/magcarta/magcarta-onboarding) (C06). Production builder (C19f) is planned in Wave F.
 
-Architecture, component decomposition, and implementation waves are defined in **[magcarta-metadata](https://github.com/magcarta/magcarta-metadata)**. Identity and discovery: [magcarta-identity](https://github.com/magcarta/magcarta-identity) (C04), [magcarta-ans](https://github.com/magcarta/magcarta-ans) (C05).
+Architecture, component decomposition, and implementation waves are defined in **[magcarta-metadata](https://github.com/magcarta/magcarta-metadata)**. Identity and discovery: [magcarta-identity](https://github.com/magcarta/magcarta-identity) (C04), [magcarta-ans](https://github.com/magcarta/magcarta-ans) (C05). For an integrated demo (wizard + chat + governance), see [magcarta-demo](https://github.com/magcarta/magcarta-demo).
 
 ---
 
