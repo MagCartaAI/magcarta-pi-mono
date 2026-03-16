@@ -40,21 +40,38 @@ Tools for building AI agents and managing LLM deployments.
 | **[@mariozechner/pi-web-ui](packages/web-ui)** | Web components for AI chat interfaces |
 | **[@mariozechner/pi-pods](packages/pods)** | CLI for managing vLLM deployments on GPU pods |
 
-## Contributing
+## Requirements
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).
+- **Node.js** 18+ and **npm**. Workspaces are used for the monorepo.
 
-## Development
+## Build and run
 
 ```bash
-npm install          # Install all dependencies
-npm run build        # Build all packages
-npm run check        # Lint, format, and type check
-./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (must be run from repo root)
+# Install all dependencies (workspace root)
+npm install
+
+# Build all packages (order: tui → ai → agent → coding-agent → mom → web-ui → pods)
+npm run build
+
+# Lint, format, and type check (run after build)
+npm run check
+
+# Run tests (skips LLM-dependent tests without API keys)
+./test.sh
+
+# Run pi coding agent from sources (from repo root)
+./pi-test.sh
 ```
 
 > **Note:** `npm run check` requires `npm run build` to be run first. The web-ui package uses `tsc` which needs compiled `.d.ts` files from dependencies.
+
+## Development
+
+For iterative development across packages, use `npm run dev` (runs ai, agent, coding-agent, mom, web-ui, tui in parallel with hot reload).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).
 
 ## License
 
