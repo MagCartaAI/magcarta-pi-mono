@@ -128,6 +128,59 @@ describe("agentLoop with AgentMessage", () => {
 		expect(eventTypes).toContain("agent_end");
 	});
 
+	it("should close the turn when the first assistant response fails", async () => {
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [],
+			tools: [],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("Hello");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, () => {
+			throw new Error("stream failed");
+		});
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		expect(messages.length).toBe(2);
+		expect(messages[0].role).toBe("user");
+		expect(messages[1].role).toBe("assistant");
+		if (messages[1].role === "assistant" && messages[1].content[0]?.type === "text") {
+			expect(messages[1].content[0].text).toContain("Error: stream failed");
+			expect(messages[1].stopReason).toBe("error");
+		}
+
+		const eventTypes = events.map((event) => event.type);
+		expect(eventTypes).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+
+		const turnEndEvent = events.find(
+			(event): event is Extract<AgentEvent, { type: "turn_end" }> => event.type === "turn_end",
+		);
+		expect(turnEndEvent).toBeDefined();
+		if (turnEndEvent && turnEndEvent.message.role === "assistant") {
+			expect(turnEndEvent.message.stopReason).toBe("error");
+			expect(turnEndEvent.toolResults).toEqual([]);
+		}
+	});
+
 	it("should handle custom message types via convertToLlm", async () => {
 		// Create a custom message type
 		interface CustomNotification {
@@ -470,6 +523,56 @@ describe("agentLoopContinue with AgentMessage", () => {
 		const messageEndEvents = events.filter((e) => e.type === "message_end");
 		expect(messageEndEvents.length).toBe(1);
 		expect((messageEndEvents[0] as any).message.role).toBe("assistant");
+	});
+
+	it("should emit turn_end when continue fails before the assistant stream starts", async () => {
+		const userMessage: AgentMessage = createUserMessage("Hello");
+		const context: AgentContext = {
+			systemPrompt: "You are helpful.",
+			messages: [userMessage],
+			tools: [],
+		};
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoopContinue(context, config, undefined, () => {
+			throw new Error("stream failed");
+		});
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		expect(messages.length).toBe(1);
+		expect(messages[0].role).toBe("assistant");
+		if (messages[0].role === "assistant" && messages[0].content[0]?.type === "text") {
+			expect(messages[0].content[0].text).toContain("Error: stream failed");
+			expect(messages[0].stopReason).toBe("error");
+		}
+
+		const eventTypes = events.map((event) => event.type);
+		expect(eventTypes).toEqual([
+			"agent_start",
+			"turn_start",
+			"message_start",
+			"message_end",
+			"turn_end",
+			"agent_end",
+		]);
+
+		const turnEndEvent = events.find(
+			(event): event is Extract<AgentEvent, { type: "turn_end" }> => event.type === "turn_end",
+		);
+		expect(turnEndEvent).toBeDefined();
+		if (turnEndEvent && turnEndEvent.message.role === "assistant") {
+			expect(turnEndEvent.message.stopReason).toBe("error");
+			expect(turnEndEvent.toolResults).toEqual([]);
+		}
 	});
 
 	it("should allow custom message types as last message (caller responsibility)", async () => {

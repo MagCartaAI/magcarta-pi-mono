@@ -5,7 +5,7 @@ let _join: typeof import("node:path").join | null = null;
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
 
-const dynamicImport: DynamicImport = (specifier) => import(specifier);
+const dynamicImport: DynamicImport = (specifier) => import(/* @vite-ignore */ specifier);
 const NODE_FS_SPECIFIER = "node:" + "fs";
 const NODE_OS_SPECIFIER = "node:" + "os";
 const NODE_PATH_SPECIFIER = "node:" + "path";

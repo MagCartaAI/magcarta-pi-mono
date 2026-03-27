@@ -34,6 +34,7 @@ export function agentLoop(
 	streamFn?: StreamFn,
 ): EventStream<AgentEvent, AgentMessage[]> {
 	const stream = createAgentStream();
+	const turnState: TurnState = { isOpen: false };
 
 	(async () => {
 		const newMessages: AgentMessage[] = [...prompts];
@@ -43,13 +44,17 @@ export function agentLoop(
 		};
 
 		stream.push({ type: "agent_start" });
-		stream.push({ type: "turn_start" });
+		pushTurnStart(stream, turnState);
 		for (const prompt of prompts) {
 			stream.push({ type: "message_start", message: prompt });
 			stream.push({ type: "message_end", message: prompt });
 		}
 
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		try {
+			await runLoop(currentContext, newMessages, config, signal, stream, turnState, streamFn);
+		} catch (err) {
+			pushAgentLoopFailure(stream, newMessages, config, turnState, err);
+		}
 	})();
 
 	return stream;
@@ -78,15 +83,20 @@ export function agentLoopContinue(
 	}
 
 	const stream = createAgentStream();
+	const turnState: TurnState = { isOpen: false };
 
 	(async () => {
 		const newMessages: AgentMessage[] = [];
 		const currentContext: AgentContext = { ...context };
 
 		stream.push({ type: "agent_start" });
-		stream.push({ type: "turn_start" });
+		pushTurnStart(stream, turnState);
 
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		try {
+			await runLoop(currentContext, newMessages, config, signal, stream, turnState, streamFn);
+		} catch (err) {
+			pushAgentLoopFailure(stream, newMessages, config, turnState, err);
+		}
 	})();
 
 	return stream;
@@ -99,6 +109,61 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 	);
 }
 
+interface TurnState {
+	isOpen: boolean;
+}
+
+function pushTurnStart(stream: EventStream<AgentEvent, AgentMessage[]>, turnState: TurnState): void {
+	stream.push({ type: "turn_start" });
+	turnState.isOpen = true;
+}
+
+function pushTurnEnd(
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	turnState: TurnState,
+	message: AgentMessage,
+	toolResults: ToolResultMessage[],
+): void {
+	stream.push({ type: "turn_end", message, toolResults });
+	turnState.isOpen = false;
+}
+
+/** End the stream after a failure that occurs before/during runLoop (e.g. sync throw from streamSimple). */
+function pushAgentLoopFailure(
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	newMessages: AgentMessage[],
+	config: AgentLoopConfig,
+	turnState: TurnState,
+	err: unknown,
+): void {
+	const text = err instanceof Error ? err.message : String(err);
+	const errAssistant: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: `Error: ${text}` }],
+		api: config.model.api ?? "openai-completions",
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		timestamp: Date.now(),
+	};
+	newMessages.push(errAssistant);
+	stream.push({ type: "message_start", message: errAssistant });
+	stream.push({ type: "message_end", message: errAssistant });
+	if (turnState.isOpen) {
+		pushTurnEnd(stream, turnState, errAssistant, []);
+	}
+	stream.push({ type: "agent_end", messages: newMessages });
+	stream.end(newMessages);
+}
+
 /**
  * Main loop logic shared by agentLoop and agentLoopContinue.
  */
@@ -108,6 +173,7 @@ async function runLoop(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
+	turnState: TurnState,
 	streamFn?: StreamFn,
 ): Promise<void> {
 	let firstTurn = true;
@@ -122,7 +188,7 @@ async function runLoop(
 		// Inner loop: process tool calls and steering messages
 		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			if (!firstTurn) {
-				stream.push({ type: "turn_start" });
+				pushTurnStart(stream, turnState);
 			} else {
 				firstTurn = false;
 			}
@@ -143,7 +209,7 @@ async function runLoop(
 			newMessages.push(message);
 
 			if (message.stopReason === "error" || message.stopReason === "aborted") {
-				stream.push({ type: "turn_end", message, toolResults: [] });
+				pushTurnEnd(stream, turnState, message, []);
 				stream.push({ type: "agent_end", messages: newMessages });
 				stream.end(newMessages);
 				return;
@@ -174,7 +240,7 @@ async function runLoop(
 				}
 			}
 
-			stream.push({ type: "turn_end", message, toolResults });
+			pushTurnEnd(stream, turnState, message, toolResults);
 
 			// Get steering messages after turn completes
 			if (steeringAfterTools && steeringAfterTools.length > 0) {

@@ -56,6 +56,17 @@ const COPILOT_STATIC_HEADERS = {
 const AI_GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1";
 const AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh";
 
+function clampImpossibleTokenLimits(models: Model<Api>[]): void {
+	for (const model of models) {
+		if (model.maxTokens <= model.contextWindow) continue;
+
+		console.warn(
+			`Clamping ${model.provider}/${model.id} maxTokens from ${model.maxTokens} to contextWindow ${model.contextWindow}`,
+		);
+		model.maxTokens = model.contextWindow;
+	}
+}
+
 async function fetchOpenRouterModels(): Promise<Model<any>[]> {
 	try {
 		console.log("Fetching models from OpenRouter API...");
@@ -1442,6 +1453,10 @@ async function generateModels() {
 			baseUrl: "",
 		}));
 	allModels.push(...azureOpenAiModels);
+
+	// Output tokens are part of the total context window, so imported metadata
+	// must never advertise a larger completion cap than the model's context size.
+	clampImpossibleTokenLimits(allModels);
 
 	// Group by provider and deduplicate by model ID
 	const providers: Record<string, Record<string, Model<any>>> = {};
