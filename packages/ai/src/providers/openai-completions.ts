@@ -342,6 +342,20 @@ export const streamSimpleOpenAICompletions: StreamFunction<"openai-completions",
 	} satisfies OpenAICompletionsOptions);
 };
 
+function getBrowserOrigin(): string | undefined {
+	const location = Reflect.get(globalThis, "location");
+	if (typeof location !== "object" || location === null) {
+		return undefined;
+	}
+
+	const origin = Reflect.get(location, "origin");
+	if (typeof origin === "string" && origin.length > 0) {
+		return origin;
+	}
+
+	return undefined;
+}
+
 /**
  * OpenAI's JS client builds request URLs with `new URL(baseURL + path)` (single argument). In browsers,
  * a root-relative `baseURL` like `/api/model` yields `/api/model/chat/completions`, which is invalid
@@ -353,13 +367,25 @@ function resolveOpenAIClientBaseURL(baseUrl: string): string {
 		return baseUrl;
 	}
 	if (baseUrl.startsWith("/")) {
-		const loc = (globalThis as { location?: { origin?: string } }).location;
-		const origin = loc?.origin;
-		if (typeof origin === "string" && origin.length > 0) {
+		const origin = getBrowserOrigin();
+		if (origin) {
 			return `${origin}${baseUrl}`;
 		}
 	}
 	return baseUrl;
+}
+
+function resolveOpenAIClientFetchOptions(baseUrl: string): { credentials: "include" } | undefined {
+	const origin = getBrowserOrigin();
+	if (!origin) {
+		return undefined;
+	}
+
+	try {
+		return new URL(baseUrl).origin === origin ? { credentials: "include" } : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 function createClient(
@@ -392,13 +418,17 @@ function createClient(
 		Object.assign(headers, optionsHeaders);
 	}
 
+	const baseURL = resolveOpenAIClientBaseURL(model.baseUrl);
+	const fetchOptions = resolveOpenAIClientFetchOptions(baseURL);
+
 	return new OpenAI({
 		apiKey,
-		baseURL: resolveOpenAIClientBaseURL(model.baseUrl),
+		baseURL,
 		dangerouslyAllowBrowser: true,
 		defaultHeaders: headers,
-		// Same-origin browser calls (e.g. MagCarta demo → /api/model) must send gateway JWT cookies.
-		fetchOptions: { credentials: "include" },
+		// Same-origin browser calls (e.g. MagCarta demo → /api/model) must send gateway JWT cookies,
+		// but cross-origin providers must use the browser default to avoid CORS credential failures.
+		...(fetchOptions ? { fetchOptions } : {}),
 	});
 }
 
