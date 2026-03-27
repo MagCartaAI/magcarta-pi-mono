@@ -52,6 +52,27 @@ function hasToolHistory(messages: Message[]): boolean {
 	return false;
 }
 
+/**
+ * Streamed `delta.content` is typed as string in the OpenAI SDK, but OpenRouter and other
+ * OpenAI-compatible gateways sometimes send multipart arrays (`{ type, text }[]`). Coerce
+ * to a single string so text accumulation and UI streaming stay correct.
+ */
+function deltaContentToText(content: unknown): string {
+	if (content == null) return "";
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		let out = "";
+		for (const part of content) {
+			if (part && typeof part === "object") {
+				const p = part as Record<string, unknown>;
+				if (typeof p["text"] === "string") out += p["text"];
+			}
+		}
+		return out;
+	}
+	return "";
+}
+
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -157,11 +178,8 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				}
 
 				if (choice.delta) {
-					if (
-						choice.delta.content !== null &&
-						choice.delta.content !== undefined &&
-						choice.delta.content.length > 0
-					) {
+					const textDelta = deltaContentToText(choice.delta.content as unknown);
+					if (textDelta.length > 0) {
 						if (!currentBlock || currentBlock.type !== "text") {
 							finishCurrentBlock(currentBlock);
 							currentBlock = { type: "text", text: "" };
@@ -170,11 +188,11 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 						}
 
 						if (currentBlock.type === "text") {
-							currentBlock.text += choice.delta.content;
+							currentBlock.text += textDelta;
 							stream.push({
 								type: "text_delta",
 								contentIndex: blockIndex(),
-								delta: choice.delta.content,
+								delta: textDelta,
 								partial: output,
 							});
 						}
@@ -324,6 +342,26 @@ export const streamSimpleOpenAICompletions: StreamFunction<"openai-completions",
 	} satisfies OpenAICompletionsOptions);
 };
 
+/**
+ * OpenAI's JS client builds request URLs with `new URL(baseURL + path)` (single argument). In browsers,
+ * a root-relative `baseURL` like `/api/model` yields `/api/model/chat/completions`, which is invalid
+ * for the one-argument URL constructor — it must be absolute (`https://host/...`).
+ */
+function resolveOpenAIClientBaseURL(baseUrl: string): string {
+	const isAbsolute = baseUrl.startsWith("https://") || baseUrl.startsWith("http://");
+	if (isAbsolute) {
+		return baseUrl;
+	}
+	if (baseUrl.startsWith("/")) {
+		const loc = (globalThis as { location?: { origin?: string } }).location;
+		const origin = loc?.origin;
+		if (typeof origin === "string" && origin.length > 0) {
+			return `${origin}${baseUrl}`;
+		}
+	}
+	return baseUrl;
+}
+
 function createClient(
 	model: Model<"openai-completions">,
 	context: Context,
@@ -356,9 +394,11 @@ function createClient(
 
 	return new OpenAI({
 		apiKey,
-		baseURL: model.baseUrl,
+		baseURL: resolveOpenAIClientBaseURL(model.baseUrl),
 		dangerouslyAllowBrowser: true,
 		defaultHeaders: headers,
+		// Same-origin browser calls (e.g. MagCarta demo → /api/model) must send gateway JWT cookies.
+		fetchOptions: { credentials: "include" },
 	});
 }
 

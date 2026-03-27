@@ -49,7 +49,11 @@ export function agentLoop(
 			stream.push({ type: "message_end", message: prompt });
 		}
 
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		try {
+			await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		} catch (err) {
+			pushAgentLoopFailure(stream, newMessages, config, err);
+		}
 	})();
 
 	return stream;
@@ -86,7 +90,11 @@ export function agentLoopContinue(
 		stream.push({ type: "agent_start" });
 		stream.push({ type: "turn_start" });
 
-		await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		try {
+			await runLoop(currentContext, newMessages, config, signal, stream, streamFn);
+		} catch (err) {
+			pushAgentLoopFailure(stream, newMessages, config, err);
+		}
 	})();
 
 	return stream;
@@ -97,6 +105,38 @@ function createAgentStream(): EventStream<AgentEvent, AgentMessage[]> {
 		(event: AgentEvent) => event.type === "agent_end",
 		(event: AgentEvent) => (event.type === "agent_end" ? event.messages : []),
 	);
+}
+
+/** End the stream after a failure that occurs before/during runLoop (e.g. sync throw from streamSimple). */
+function pushAgentLoopFailure(
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+	newMessages: AgentMessage[],
+	config: AgentLoopConfig,
+	err: unknown,
+): void {
+	const text = err instanceof Error ? err.message : String(err);
+	const errAssistant: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: `Error: ${text}` }],
+		api: config.model.api ?? "openai-completions",
+		provider: config.model.provider,
+		model: config.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "error",
+		timestamp: Date.now(),
+	};
+	newMessages.push(errAssistant);
+	stream.push({ type: "message_start", message: errAssistant });
+	stream.push({ type: "message_end", message: errAssistant });
+	stream.push({ type: "agent_end", messages: newMessages });
+	stream.end(newMessages);
 }
 
 /**

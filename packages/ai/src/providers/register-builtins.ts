@@ -33,7 +33,7 @@ interface BedrockProviderModule {
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
 
-const dynamicImport: DynamicImport = (specifier) => import(specifier);
+const dynamicImport: DynamicImport = (specifier) => import(/* @vite-ignore */ specifier);
 const BEDROCK_PROVIDER_SPECIFIER = "./amazon-" + "bedrock.js";
 
 let bedrockProviderModuleOverride: BedrockProviderModule | undefined;
