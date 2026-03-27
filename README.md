@@ -42,7 +42,7 @@ Tools for building AI agents and managing LLM deployments.
 
 ## Requirements
 
-- **Node.js** 18+ and **npm**. Workspaces are used for the monorepo.
+- **Node.js** 20+ and **npm**. Workspaces are used for the monorepo.
 
 ## Build and run
 
