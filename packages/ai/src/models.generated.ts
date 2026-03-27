@@ -7655,7 +7655,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 8192,
-			maxTokens: 16384,
+			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"meta-llama/llama-3.1-70b-instruct": {
 			id: "meta-llama/llama-3.1-70b-instruct",
@@ -8352,7 +8352,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 131072,
-			maxTokens: 163840,
+			maxTokens: 131072,
 		} satisfies Model<"openai-completions">,
 		"nvidia/llama-3.1-nemotron-70b-instruct": {
 			id: "nvidia/llama-3.1-nemotron-70b-instruct",
@@ -8539,7 +8539,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 4095,
-			maxTokens: 4096,
+			maxTokens: 4095,
 		} satisfies Model<"openai-completions">,
 		"openai/gpt-3.5-turbo-16k": {
 			id: "openai/gpt-3.5-turbo-16k",
@@ -10783,7 +10783,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 80000,
-			maxTokens: 131072,
+			maxTokens: 80000,
 		} satisfies Model<"openai-completions">,
 		"z-ai/glm-5-turbo": {
 			id: "z-ai/glm-5-turbo",
