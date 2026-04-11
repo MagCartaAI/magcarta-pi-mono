@@ -172,17 +172,98 @@ function isObjectWithError(
 	);
 }
 
+// Review finding F5: comprehensive contract validation on the client side.
+// The pi-mono GatewayProvider now rejects any gateway response that does not
+// match the contract shape exactly — same invariants enforced by the
+// server-side Zod refinement and the Python SDK's AuthorizationDecision.from_dict.
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+const POLICY_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+const CONNECTOR_ACTIONS = new Set<string>([
+	"connector::http::fetch",
+	"connector::http::submit",
+	"connector::db::query",
+	"connector::db::mutate",
+	"connector::file::read",
+	"connector::file::write",
+	"connector::file::delete",
+	"connector::llm::invoke",
+	"connector::browser::navigate",
+]);
+const CONNECTOR_MODES = new Set<string>(["approval", "proxy"]);
+const CLASSIFICATIONS = new Set<string>(["public", "internal", "confidential", "pii", "phi", "pci", "restricted"]);
+const CLASSIFICATION_LAYERS = new Set<string>(["manifest", "policy", "scanner", "external_provider"]);
+const CLASSIFICATION_STATUSES = new Set<string>(["success", "timeout", "error", "skipped"]);
+const DENY_CATEGORIES = new Set<string>([
+	"policy",
+	"classification",
+	"credential_missing",
+	"credential_rejected",
+	"mode_mismatch",
+	"target_unavailable",
+	"malformed_envelope",
+]);
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0;
+}
+
+function isClassificationContribution(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const c = value as Record<string, unknown>;
+	if (typeof c.layer !== "string" || !CLASSIFICATION_LAYERS.has(c.layer)) return false;
+	if (typeof c.status !== "string" || !CLASSIFICATION_STATUSES.has(c.status)) return false;
+	if (!Array.isArray(c.classifications)) return false;
+	for (const entry of c.classifications) {
+		if (typeof entry !== "string" || !CLASSIFICATIONS.has(entry)) return false;
+	}
+	if (typeof c.evaluated_at !== "string") return false;
+	if (typeof c.latency_ms !== "number" || !Number.isFinite(c.latency_ms)) return false;
+	return true;
+}
+
+function isClassificationChain(value: unknown): boolean {
+	if (typeof value !== "object" || value === null) return false;
+	const chain = value as Record<string, unknown>;
+	if (!Array.isArray(chain.contributions)) return false;
+	for (const c of chain.contributions) {
+		if (!isClassificationContribution(c)) return false;
+	}
+	if (typeof chain.merged_classification !== "string" || !CLASSIFICATIONS.has(chain.merged_classification)) {
+		return false;
+	}
+	if (!isNonEmptyString(chain.merge_reason)) return false;
+	return true;
+}
+
 function isAuthorizationDecision(value: unknown): value is AuthorizationDecision {
 	if (typeof value !== "object" || value === null) return false;
 	const obj = value as Record<string, unknown>;
-	return (
-		obj.schema_version === "0.6.0" &&
-		typeof obj.attempt_id === "string" &&
-		(obj.outcome === "ALLOW" || obj.outcome === "DENY") &&
-		typeof obj.action_id === "string" &&
-		typeof obj.connector_id === "string" &&
-		typeof obj.signature === "string"
-	);
+
+	if (obj.schema_version !== "0.6.0") return false;
+	if (typeof obj.attempt_id !== "string" || !UUID_RE.test(obj.attempt_id)) return false;
+	if (obj.outcome !== "ALLOW" && obj.outcome !== "DENY") return false;
+	if (typeof obj.action_id !== "string" || !CONNECTOR_ACTIONS.has(obj.action_id)) return false;
+	if (!isNonEmptyString(obj.connector_id)) return false;
+	if (typeof obj.connector_mode !== "string" || !CONNECTOR_MODES.has(obj.connector_mode)) return false;
+	if (!isNonEmptyString(obj.tenant_id)) return false;
+	if (!isNonEmptyString(obj.agent_id)) return false;
+	if (!isClassificationChain(obj.classification_chain)) return false;
+	if (typeof obj.policy_hash !== "string" || !POLICY_HASH_RE.test(obj.policy_hash)) return false;
+	if (!isNonEmptyString(obj.evaluated_at)) return false;
+	if (!isNonEmptyString(obj.signer)) return false;
+	if (!isNonEmptyString(obj.signature)) return false;
+
+	// DENY/ALLOW cleanup invariant — mirrors server-side Zod refinement
+	if (obj.outcome === "DENY") {
+		if (!isNonEmptyString(obj.reason)) return false;
+		if (typeof obj.deny_category !== "string" || !DENY_CATEGORIES.has(obj.deny_category)) return false;
+	} else {
+		if (obj.reason !== undefined && obj.reason !== null) return false;
+		if (obj.deny_category !== undefined && obj.deny_category !== null) return false;
+	}
+
+	return true;
 }
 
 /**
