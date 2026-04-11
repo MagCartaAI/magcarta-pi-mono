@@ -102,6 +102,80 @@ describe("GatewayProvider.authorize — error mapping", () => {
 		});
 		await expect(provider.authorize(makeEnvelope())).rejects.toBeInstanceOf(GatewayProviderError);
 	});
+
+	it("throws GatewayProviderError when the token provider fails", async () => {
+		const tokenErr = new Error("token fetch timed out");
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => {
+				throw tokenErr;
+			},
+			fetch: fetchOk(makeValidDecisionBody()),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			name: "GatewayProviderError",
+			code: "TOKEN_PROVIDER_FAILED",
+			cause: tokenErr,
+		});
+	});
+
+	it("throws GatewayProviderError when the fetch transport fails", async () => {
+		const transportErr = new TypeError("network down");
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test-jwt",
+			fetch: async () => {
+				throw transportErr;
+			},
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			name: "GatewayProviderError",
+			code: "TRANSPORT_ERROR",
+			cause: transportErr,
+		});
+	});
+
+	it("throws GatewayProviderError when response.json() fails on a 2xx reply", async () => {
+		const parseErr = new SyntaxError("unexpected token");
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test-jwt",
+			fetch: async () => ({
+				ok: true,
+				status: 200,
+				json: async () => {
+					throw parseErr;
+				},
+			}),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			name: "GatewayProviderError",
+			code: "MALFORMED_RESPONSE_BODY",
+			status: 200,
+			cause: parseErr,
+		});
+	});
+
+	it("throws GatewayProviderError when response.json() fails on a non-2xx reply", async () => {
+		const parseErr = new SyntaxError("unexpected token");
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test-jwt",
+			fetch: async () => ({
+				ok: false,
+				status: 502,
+				json: async () => {
+					throw parseErr;
+				},
+			}),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			name: "GatewayProviderError",
+			code: "MALFORMED_RESPONSE_BODY",
+			status: 502,
+			cause: parseErr,
+		});
+	});
 });
 
 describe("GatewayProvider.authorize — contract validation (review F5)", () => {
@@ -242,5 +316,123 @@ describe("GatewayProvider.authorize — contract validation (review F5)", () => 
 		});
 		const decision = await provider.authorize(makeEnvelope());
 		expect(decision.evaluated_at).toBe("2026-04-13T10:00:00.123456-05:30");
+	});
+});
+
+describe("GatewayProvider.authorize — request/response correlation check", () => {
+	it("rejects decision whose attempt_id does not match the envelope", async () => {
+		const bad = {
+			...makeValidDecisionBody(),
+			attempt_id: "22222222-2222-2222-2222-222222222222",
+		};
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/attempt_id/),
+		});
+	});
+
+	it("rejects decision whose connector_id does not match the envelope", async () => {
+		const bad = { ...makeValidDecisionBody(), connector_id: "http.other" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/connector_id/),
+		});
+	});
+
+	it("rejects decision whose tenant_id does not match the envelope", async () => {
+		const bad = { ...makeValidDecisionBody(), tenant_id: "other-tenant" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/tenant_id/),
+		});
+	});
+
+	it("rejects decision whose agent_id does not match the envelope", async () => {
+		const bad = { ...makeValidDecisionBody(), agent_id: "other-agent" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/agent_id/),
+		});
+	});
+
+	it("rejects decision whose connector_mode does not match the envelope", async () => {
+		const bad = { ...makeValidDecisionBody(), connector_mode: "proxy" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/connector_mode/),
+		});
+	});
+
+	it("rejects decision whose action_id does not match the envelope", async () => {
+		const bad = { ...makeValidDecisionBody(), action_id: "connector::http::submit" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toMatchObject({
+			code: "MISMATCHED_DECISION",
+			message: expect.stringMatching(/action_id/),
+		});
+	});
+
+	it("includes expected and actual values in mismatch error message", async () => {
+		const bad = {
+			...makeValidDecisionBody(),
+			attempt_id: "22222222-2222-2222-2222-222222222222",
+		};
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(
+			/expected "11111111-1111-1111-1111-111111111111", got "22222222-2222-2222-2222-222222222222"/,
+		);
+	});
+
+	it("reports all mismatched fields in a single error when multiple diverge", async () => {
+		const bad = {
+			...makeValidDecisionBody(),
+			attempt_id: "22222222-2222-2222-2222-222222222222",
+			connector_id: "http.other",
+			tenant_id: "other-tenant",
+		};
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		const error = await provider.authorize(makeEnvelope()).catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(GatewayProviderError);
+		const message = (error as GatewayProviderError).message;
+		expect(message).toMatch(/attempt_id/);
+		expect(message).toMatch(/connector_id/);
+		expect(message).toMatch(/tenant_id/);
 	});
 });

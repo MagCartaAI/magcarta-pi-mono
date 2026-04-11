@@ -66,18 +66,54 @@ export class GatewayProvider implements MagCartaProvider {
 	// --- GovernanceAuthorizer --------------------------------------------------
 
 	async authorize(envelope: ConnectorEnvelope): Promise<AuthorizationDecision> {
-		const token = await this.tokenProvider();
+		// Normalize every failure mode in this method onto GatewayProviderError so
+		// higher-level callers (agent-loop, SDK) can map a single exception type
+		// onto the richer error taxonomy. Raw transport / token-provider / JSON
+		// parse errors previously bypassed that mapping, which silently broke the
+		// fail-closed error contract documented on the class. See review finding
+		// on lines 68–80.
+		let token: string;
+		try {
+			token = await this.tokenProvider();
+		} catch (err) {
+			throw new GatewayProviderError(
+				"TOKEN_PROVIDER_FAILED",
+				`Token provider threw before authorize could call gateway: ${errorMessage(err)}`,
+				0,
+				{ cause: err },
+			);
+		}
 		const url = `${this.gatewayUrl}/api/connector/authorize`;
-		const response = await this.fetchImpl(url, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: `Bearer ${token}`,
-			},
-			body: JSON.stringify(envelope),
-		});
+		let response: Awaited<ReturnType<FetchLike>>;
+		try {
+			response = await this.fetchImpl(url, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${token}`,
+				},
+				body: JSON.stringify(envelope),
+			});
+		} catch (err) {
+			throw new GatewayProviderError(
+				"TRANSPORT_ERROR",
+				`Gateway request failed before a response was received: ${errorMessage(err)}`,
+				0,
+				{ cause: err },
+			);
+		}
 
-		const body = (await response.json()) as unknown;
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch (err) {
+			throw new GatewayProviderError(
+				"MALFORMED_RESPONSE_BODY",
+				`Gateway response body could not be parsed as JSON: ${errorMessage(err)}`,
+				response.status,
+				{ cause: err },
+			);
+		}
 
 		if (!response.ok) {
 			const errorBody = isObjectWithError(body) ? body.error : undefined;
@@ -93,6 +129,24 @@ export class GatewayProvider implements MagCartaProvider {
 			throw new GatewayProviderError(
 				"MALFORMED_RESPONSE",
 				"Gateway response is not a valid AuthorizationDecision",
+				response.status,
+			);
+		}
+
+		// Defense in depth: the response has a valid AuthorizationDecision
+		// shape, but we must also confirm it pertains to *this* request. A
+		// correct gateway builds the decision from the envelope's identity
+		// fields (see magcarta-gateway-service/src/connector/authorization.ts
+		// where attempt_id/connector_id are copied straight from the envelope),
+		// so this check is cheap and normally a no-op. It catches correlation
+		// bugs — in-flight retry mix-ups, stale caches, MITM replay of a signed
+		// decision from a different attempt — that a pure shape check would
+		// miss. Missing fields are already rejected above as MALFORMED_RESPONSE.
+		const mismatches = collectIdentityMismatches(envelope, body);
+		if (mismatches.length > 0) {
+			throw new GatewayProviderError(
+				"MISMATCHED_DECISION",
+				`Gateway decision does not match request envelope: ${mismatches.join("; ")}`,
 				response.status,
 			);
 		}
@@ -155,21 +209,49 @@ export class GatewayProviderError extends Error {
 		public readonly code: string,
 		message: string,
 		public readonly status: number,
+		options?: ErrorOptions,
 	) {
-		super(message);
+		super(message, options);
 		this.name = "GatewayProviderError";
 	}
+}
+
+function errorMessage(err: unknown): string {
+	if (err instanceof Error) return err.message;
+	return String(err);
 }
 
 function isObjectWithError(
 	value: unknown,
 ): value is { error: { code?: unknown; message?: unknown; category?: unknown } } {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"error" in value &&
-		typeof (value as { error: unknown }).error === "object"
-	);
+	if (typeof value !== "object" || value === null || !("error" in value)) {
+		return false;
+	}
+	const { error } = value as { error: unknown };
+	// typeof null === "object" in JavaScript, so an explicit null check is required
+	// to honour the non-null object contract on the return type.
+	return typeof error === "object" && error !== null;
+}
+
+/**
+ * Fields present on both `ConnectorEnvelope` and `AuthorizationDecision` that
+ * must be equal for a decision to be a legitimate response to a given
+ * envelope. A correct gateway always copies these values from the incoming
+ * envelope into the outgoing decision — any divergence indicates request/
+ * response correlation corruption and the decision must be rejected.
+ */
+const IDENTITY_FIELDS = ["attempt_id", "connector_id", "connector_mode", "tenant_id", "agent_id", "action_id"] as const;
+
+function collectIdentityMismatches(envelope: ConnectorEnvelope, decision: AuthorizationDecision): string[] {
+	const mismatches: string[] = [];
+	for (const field of IDENTITY_FIELDS) {
+		const expected = envelope[field];
+		const actual = decision[field];
+		if (expected !== actual) {
+			mismatches.push(`${field}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+		}
+	}
+	return mismatches;
 }
 
 // Review finding F5: comprehensive contract validation on the client side.
@@ -214,6 +296,14 @@ const DENY_CATEGORIES = new Set<string>([
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
+}
+
+function isArrayOfNonEmptyStrings(value: unknown): value is string[] {
+	if (!Array.isArray(value)) return false;
+	for (const entry of value) {
+		if (!isNonEmptyString(entry)) return false;
+	}
+	return true;
 }
 
 function isClassificationContribution(value: unknown): boolean {
@@ -271,6 +361,13 @@ function isAuthorizationDecision(value: unknown): value is AuthorizationDecision
 	} else {
 		if (obj.reason !== undefined && obj.reason !== null) return false;
 		if (obj.deny_category !== undefined && obj.deny_category !== null) return false;
+	}
+
+	if (obj.determining_policies !== undefined && !isArrayOfNonEmptyStrings(obj.determining_policies)) {
+		return false;
+	}
+	if (obj.checkpoint_required !== undefined && typeof obj.checkpoint_required !== "boolean") {
+		return false;
 	}
 
 	return true;

@@ -112,6 +112,111 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 		).toThrow(/unsupported HTTP method/);
 	});
 
+	it("happy: forwards params.body, params.headers, and params.query_params into the envelope request", () => {
+		const registry = setupRegistry();
+		const builder = new ConnectorEnvelopeBuilder(registry);
+
+		const envelope = builder.build({
+			tool_name: "search_web",
+			params: {
+				url: "https://api.example.com/search",
+				method: "POST",
+				body: '{"q":"test"}',
+				headers: { "content-type": "application/json", "x-request-id": "abc" },
+				query_params: { limit: "10", cursor: "xyz" },
+			},
+			tenant_id: "acme",
+			agent_id: "agent-123",
+			agent_did: "did:web:test:agents:agent-123",
+		});
+
+		expect(envelope.request.body).toBe('{"q":"test"}');
+		expect(envelope.request.headers).toEqual({
+			"content-type": "application/json",
+			"x-request-id": "abc",
+		});
+		expect(envelope.request.query_params).toEqual({ limit: "10", cursor: "xyz" });
+	});
+
+	it("happy: omits body/headers/query_params when not supplied", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		const envelope = builder.build({
+			tool_name: "search_web",
+			params: { url: "https://example.com", method: "GET" },
+			tenant_id: "t",
+			agent_id: "a",
+			agent_did: "did:web:t:agents:a",
+		});
+		expect(envelope.request.body).toBeUndefined();
+		expect(envelope.request.headers).toBeUndefined();
+		expect(envelope.request.query_params).toBeUndefined();
+	});
+
+	it("unhappy: non-string params.body throws", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		expect(() =>
+			builder.build({
+				tool_name: "search_web",
+				params: { url: "https://example.com", method: "POST", body: { foo: "bar" } },
+				tenant_id: "t",
+				agent_id: "a",
+				agent_did: "did:web:t:agents:a",
+			}),
+		).toThrow(/params\.body/);
+	});
+
+	it("unhappy: non-object params.headers throws", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		expect(() =>
+			builder.build({
+				tool_name: "search_web",
+				params: { url: "https://example.com", method: "GET", headers: "content-type: text/plain" },
+				tenant_id: "t",
+				agent_id: "a",
+				agent_did: "did:web:t:agents:a",
+			}),
+		).toThrow(/params\.headers/);
+	});
+
+	it("unhappy: params.headers with non-string value throws", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		expect(() =>
+			builder.build({
+				tool_name: "search_web",
+				params: { url: "https://example.com", method: "GET", headers: { "x-count": 7 } },
+				tenant_id: "t",
+				agent_id: "a",
+				agent_did: "did:web:t:agents:a",
+			}),
+		).toThrow(/params\.headers/);
+	});
+
+	it("unhappy: non-object params.query_params throws", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		expect(() =>
+			builder.build({
+				tool_name: "search_web",
+				params: { url: "https://example.com", method: "GET", query_params: "limit=10" },
+				tenant_id: "t",
+				agent_id: "a",
+				agent_did: "did:web:t:agents:a",
+			}),
+		).toThrow(/params\.query_params/);
+	});
+
+	it("unhappy: params.query_params with non-string value throws", () => {
+		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+		expect(() =>
+			builder.build({
+				tool_name: "search_web",
+				params: { url: "https://example.com", method: "GET", query_params: { limit: 10 } },
+				tenant_id: "t",
+				agent_id: "a",
+				agent_did: "did:web:t:agents:a",
+			}),
+		).toThrow(/params\.query_params/);
+	});
+
 	it("corner: attempt_ids are unique across builds", () => {
 		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
 		const make = () =>

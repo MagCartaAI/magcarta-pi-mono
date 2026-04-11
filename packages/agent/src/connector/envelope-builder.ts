@@ -92,12 +92,62 @@ export class ConnectorEnvelopeBuilder {
 			throw new Error(`ConnectorEnvelopeBuilder: unsupported HTTP method ${method}`);
 		}
 
+		const headers = extractStringRecord(params.headers, "params.headers");
+		const queryParams = extractStringRecord(params.query_params, "params.query_params");
+		const body = extractBody(params.body);
+
 		const request: HttpConnectorRequest = {
 			url,
 			method: upperMethod,
+			...(headers !== undefined ? { headers } : {}),
+			...(body !== undefined ? { body } : {}),
+			...(queryParams !== undefined ? { query_params: queryParams } : {}),
 		};
 		return request;
 	}
+}
+
+/**
+ * Validate that a value intended for HttpConnectorRequest.body matches the
+ * type contract (string). Returns undefined when the caller did not provide
+ * a body, throws when the caller provided something of the wrong shape —
+ * silently dropping payload data would let the envelope misrepresent the
+ * agent's actual request, which the governance layer must not do.
+ */
+function extractBody(value: unknown): string | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new Error(
+			"ConnectorEnvelopeBuilder: params.body must be a string when present " +
+				"(serialize structured bodies before passing them to the tool call)",
+		);
+	}
+	return value;
+}
+
+/**
+ * Validate that a value intended for HttpConnectorRequest.headers or
+ * .query_params is a plain object with string values, matching the
+ * `Readonly<Record<string, string>>` type contract. Throws when the shape
+ * is wrong rather than silently dropping — same reasoning as extractBody.
+ */
+function extractStringRecord(value: unknown, fieldName: string): Record<string, string> | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(`ConnectorEnvelopeBuilder: ${fieldName} must be an object with string values when present`);
+	}
+	const out: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (typeof entry !== "string") {
+			throw new Error(`ConnectorEnvelopeBuilder: ${fieldName}.${key} must be a string; got ${typeof entry}`);
+		}
+		out[key] = entry;
+	}
+	return out;
 }
 
 /**
