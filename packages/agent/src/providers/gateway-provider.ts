@@ -355,12 +355,18 @@ function isAuthorizationDecision(value: unknown): value is AuthorizationDecision
 	if (!isNonEmptyString(obj.signature)) return false;
 
 	// DENY/ALLOW cleanup invariant — mirrors server-side Zod refinement
+	// (`z.string().optional()` on reason/deny_category — rejects null). The
+	// asserted AuthorizationDecision type declares these as `string | undefined`
+	// (no null), so the guard must reject null to avoid lying about the shape
+	// it returns. An ALLOW decision carrying `reason: null` would otherwise
+	// pass here, and downstream `decision.reason !== undefined` checks would
+	// treat null as "present string" and crash on string operations.
 	if (obj.outcome === "DENY") {
 		if (!isNonEmptyString(obj.reason)) return false;
 		if (typeof obj.deny_category !== "string" || !DENY_CATEGORIES.has(obj.deny_category)) return false;
 	} else {
-		if (obj.reason !== undefined && obj.reason !== null) return false;
-		if (obj.deny_category !== undefined && obj.deny_category !== null) return false;
+		if (obj.reason !== undefined) return false;
+		if (obj.deny_category !== undefined) return false;
 	}
 
 	if (obj.determining_policies !== undefined && !isArrayOfNonEmptyStrings(obj.determining_policies)) {

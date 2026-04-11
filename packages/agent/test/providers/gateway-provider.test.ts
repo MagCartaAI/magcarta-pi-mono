@@ -243,6 +243,26 @@ describe("GatewayProvider.authorize — contract validation (review F5)", () => 
 		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
 	});
 
+	it("rejects ALLOW response that carries reason: null (type-guard must not permit null)", async () => {
+		const bad = { ...makeValidDecisionBody(), reason: null };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
+	});
+
+	it("rejects ALLOW response that carries deny_category: null (type-guard must not permit null)", async () => {
+		const bad = { ...makeValidDecisionBody(), deny_category: null };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
+	});
+
 	it("rejects DENY response without deny_category", async () => {
 		const bad = { ...makeValidDecisionBody(), outcome: "DENY", reason: "denied" };
 		const provider = new GatewayProvider({

@@ -16,7 +16,6 @@ export interface BuildEnvelopeInput {
 	readonly tenant_id: string;
 	readonly agent_id: string;
 	readonly agent_did: string;
-	readonly session_id?: string;
 }
 
 export class ConnectorEnvelopeBuilder {
