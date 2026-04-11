@@ -179,6 +179,14 @@ function isObjectWithError(
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const POLICY_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+// RFC 3339 datetime with required timezone. Mirrors Zod's
+// `z.string().datetime()` server-side enforcement and the Python SDK's
+// `_ISO_DATETIME_RE`. Review finding F2 (follow-up).
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+function isIsoDateTime(value: unknown): value is string {
+	return typeof value === "string" && ISO_DATETIME_RE.test(value);
+}
 const CONNECTOR_ACTIONS = new Set<string>([
 	"connector::http::fetch",
 	"connector::http::submit",
@@ -217,7 +225,7 @@ function isClassificationContribution(value: unknown): boolean {
 	for (const entry of c.classifications) {
 		if (typeof entry !== "string" || !CLASSIFICATIONS.has(entry)) return false;
 	}
-	if (typeof c.evaluated_at !== "string") return false;
+	if (!isIsoDateTime(c.evaluated_at)) return false;
 	if (typeof c.latency_ms !== "number" || !Number.isFinite(c.latency_ms)) return false;
 	return true;
 }
@@ -250,7 +258,9 @@ function isAuthorizationDecision(value: unknown): value is AuthorizationDecision
 	if (!isNonEmptyString(obj.agent_id)) return false;
 	if (!isClassificationChain(obj.classification_chain)) return false;
 	if (typeof obj.policy_hash !== "string" || !POLICY_HASH_RE.test(obj.policy_hash)) return false;
-	if (!isNonEmptyString(obj.evaluated_at)) return false;
+	// Review finding F2 (follow-up): evaluated_at must be a real RFC 3339
+	// datetime, not just any non-empty string.
+	if (!isIsoDateTime(obj.evaluated_at)) return false;
 	if (!isNonEmptyString(obj.signer)) return false;
 	if (!isNonEmptyString(obj.signature)) return false;
 

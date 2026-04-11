@@ -196,4 +196,51 @@ describe("GatewayProvider.authorize — contract validation (review F5)", () => 
 		expect(decision.reason).toBe("Cedar policy denied");
 		expect(decision.deny_category).toBe("policy");
 	});
+
+	// --- Review finding F2 (follow-up): datetime validation ---
+
+	it("rejects response with non-datetime evaluated_at (review F2 follow-up)", async () => {
+		const bad = { ...makeValidDecisionBody(), evaluated_at: "yesterday" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
+	});
+
+	it("rejects response with datetime missing timezone designator", async () => {
+		const bad = { ...makeValidDecisionBody(), evaluated_at: "2026-04-13T10:00:00" };
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
+	});
+
+	it("rejects response with non-datetime contribution evaluated_at", async () => {
+		const bad = makeValidDecisionBody();
+		bad.classification_chain.contributions[0]!.evaluated_at = "last week";
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(bad),
+		});
+		await expect(provider.authorize(makeEnvelope())).rejects.toThrow(/not a valid AuthorizationDecision/);
+	});
+
+	it("accepts datetime with offset timezone", async () => {
+		const good = {
+			...makeValidDecisionBody(),
+			evaluated_at: "2026-04-13T10:00:00.123456-05:30",
+		};
+		const provider = new GatewayProvider({
+			gateway_url: "http://gateway.test:8080",
+			token_provider: () => "test",
+			fetch: fetchOk(good),
+		});
+		const decision = await provider.authorize(makeEnvelope());
+		expect(decision.evaluated_at).toBe("2026-04-13T10:00:00.123456-05:30");
+	});
 });
