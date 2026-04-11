@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConnectorEnvelopeBuilder } from "../../src/connector/envelope-builder.js";
-import { ToolRegistry } from "../../src/connector/tool-registry.js";
+import { DuplicateToolRegistrationError, ToolRegistry } from "../../src/connector/tool-registry.js";
 
 function setupRegistry(): ToolRegistry {
 	const registry = new ToolRegistry();
@@ -150,5 +150,74 @@ describe("ToolRegistry", () => {
 	it("happy: list returns all bindings", () => {
 		const registry = setupRegistry();
 		expect(registry.list()).toHaveLength(2);
+	});
+
+	// --- Review F5 (round 3): duplicate registration semantics ---
+
+	it("unhappy: duplicate tool name throws without override (review F5)", () => {
+		const registry = new ToolRegistry();
+		registry.register({
+			name: "alpha",
+			connector_id: "http.alpha",
+			connector_type: "http",
+			default_action: "connector::http::fetch",
+			default_mode: "approval",
+		});
+		expect(() =>
+			registry.register({
+				name: "alpha",
+				connector_id: "http.alpha-v2",
+				connector_type: "http",
+				default_action: "connector::http::submit",
+				default_mode: "proxy",
+			}),
+		).toThrow(DuplicateToolRegistrationError);
+	});
+
+	it("happy: duplicate tool name succeeds with override: true", () => {
+		const registry = new ToolRegistry();
+		registry.register({
+			name: "alpha",
+			connector_id: "http.alpha",
+			connector_type: "http",
+			default_action: "connector::http::fetch",
+			default_mode: "approval",
+		});
+		registry.register(
+			{
+				name: "alpha",
+				connector_id: "http.alpha-v2",
+				connector_type: "http",
+				default_action: "connector::http::submit",
+				default_mode: "proxy",
+			},
+			{ override: true },
+		);
+		expect(registry.lookup("alpha")?.connector_id).toBe("http.alpha-v2");
+		expect(registry.lookup("alpha")?.default_mode).toBe("proxy");
+	});
+
+	it("corner: DuplicateToolRegistrationError exposes the conflicting name", () => {
+		const registry = new ToolRegistry();
+		registry.register({
+			name: "alpha",
+			connector_id: "http.alpha",
+			connector_type: "http",
+			default_action: "connector::http::fetch",
+			default_mode: "approval",
+		});
+		try {
+			registry.register({
+				name: "alpha",
+				connector_id: "http.alpha-v2",
+				connector_type: "http",
+				default_action: "connector::http::fetch",
+				default_mode: "approval",
+			});
+			throw new Error("expected DuplicateToolRegistrationError");
+		} catch (err) {
+			expect(err).toBeInstanceOf(DuplicateToolRegistrationError);
+			expect((err as DuplicateToolRegistrationError).toolName).toBe("alpha");
+		}
 	});
 });
