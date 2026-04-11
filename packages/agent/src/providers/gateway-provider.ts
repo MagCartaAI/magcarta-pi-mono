@@ -261,9 +261,27 @@ function collectIdentityMismatches(envelope: ConnectorEnvelope, decision: Author
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const POLICY_HASH_RE = /^sha256:[0-9a-f]{64}$/;
-// RFC 3339 datetime with required timezone. Mirrors Zod's
-// `z.string().datetime()` server-side enforcement and the Python SDK's
-// `_ISO_DATETIME_RE`. Review finding F2 (follow-up).
+// RFC 3339 datetime with required timezone — FORMAT-ONLY validation.
+//
+// `ISO_DATETIME_RE` and its thin wrapper `isIsoDateTime` check only the
+// lexical shape: four-digit year, two-digit month/day/hour/minute/second,
+// optional fractional seconds, required trailing `Z` or `±HH:MM` offset.
+// They do NOT validate calendar semantics — `"2026-13-45T25:99:99Z"`,
+// `"2025-02-30T10:00:00Z"` (Feb 30), and `"2024-04-31T10:00:00Z"` (Apr 31)
+// all pass the regex.
+//
+// Calendar validation is intentionally out of scope because `evaluated_at`
+// is produced by the gateway itself (`new Date().toISOString()` inside
+// `magcarta-gateway-service/src/connector/authorization.ts`) and embedded
+// in a signed decision. A malicious or buggy gateway emitting a
+// calendar-invalid timestamp is a gateway defect, not a wire-contract
+// attack vector, and duplicating `Date.parse()` semantics here would add
+// maintenance cost (leap-year rules, month-length tables) without
+// meaningful defense. Format-only parity matches what Zod's
+// `z.string().datetime()` does server-side and what the Python SDK's
+// `_ISO_DATETIME_RE` does in `AuthorizationDecision.from_dict`.
+//
+// Review finding F2 (follow-up).
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 function isIsoDateTime(value: unknown): value is string {

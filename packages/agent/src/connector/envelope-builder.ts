@@ -150,19 +150,44 @@ function extractStringRecord(value: unknown, fieldName: string): Record<string, 
 }
 
 /**
- * Generate a v4-style attempt ID. Uses crypto.randomUUID where available
- * (Node 22+, all modern runtimes) and falls back to a manual RFC 4122
- * format otherwise so the package stays environment-agnostic for
- * browser-smoke-check targets.
+ * Generate a v4-style attempt ID. Three-tier entropy strategy:
+ *
+ *   1. `crypto.randomUUID()` — cryptographically secure, native v4 format.
+ *      Available in Node 19+ on `globalThis.crypto`, all modern browsers,
+ *      Deno, Bun, workers.
+ *   2. `crypto.getRandomValues()` — cryptographically secure CSPRNG,
+ *      manually formatted into RFC 4122 v4 layout. Available in Node 15+,
+ *      all browsers (Web Crypto has shipped for over a decade), and every
+ *      other modern runtime. This is the *normal* fallback — in practice
+ *      `randomUUID` and `getRandomValues` are always paired.
+ *   3. `Math.random()` — NOT cryptographically secure. Last-resort fallback
+ *      so the package keeps working in exotic stripped-down environments
+ *      (e.g. some browser-smoke-check shims). attempt_id is the correlation
+ *      key for ADR audit entries, Cedar eval context, and request/response
+ *      identity cross-checks, so a predictable PRNG opens predictability
+ *      and ADR-spoofing risk. Any environment that lands on this branch
+ *      must be treated as degraded.
  */
 function generateAttemptId(): string {
-	const maybeCrypto = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+	const maybeCrypto = (
+		globalThis as {
+			crypto?: {
+				randomUUID?: () => string;
+				getRandomValues?: (array: Uint8Array) => Uint8Array;
+			};
+		}
+	).crypto;
 	if (maybeCrypto?.randomUUID) {
 		return maybeCrypto.randomUUID();
 	}
 	const bytes = new Uint8Array(16);
-	for (let i = 0; i < 16; i++) {
-		bytes[i] = Math.floor(Math.random() * 256);
+	if (maybeCrypto?.getRandomValues) {
+		maybeCrypto.getRandomValues(bytes);
+	} else {
+		// Cryptographically weak last-resort fallback — see docstring.
+		for (let i = 0; i < 16; i++) {
+			bytes[i] = Math.floor(Math.random() * 256);
+		}
 	}
 	const b6 = bytes[6] ?? 0;
 	const b8 = bytes[8] ?? 0;
