@@ -65,7 +65,7 @@ function deltaContentToText(content: unknown): string {
 		for (const part of content) {
 			if (part && typeof part === "object") {
 				const p = part as Record<string, unknown>;
-				if (typeof p["text"] === "string") out += p["text"];
+				if (typeof p.text === "string") out += p.text;
 			}
 		}
 		return out;
