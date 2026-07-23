@@ -1,0 +1,54 @@
+name: AgentField PR Review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+# One review per PR; a new push cancels the in-flight run to bound cost.
+concurrency:
+  group: pr-af-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pr-af-review:
+    # Skip forks: fork PRs get a read-only token with no secret access.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR-AF
+        uses: actions/checkout@v4
+        with:
+          repository: Agent-Field/pr-af
+          ref: 6b82efc8ade7cd48420ecd6de59eeb1cb80d3b49
+          path: pr-af
+          persist-credentials: false
+
+      - name: Start AgentField & PR-AF
+        working-directory: ./pr-af
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.PR_AF_GH_TOKEN }}
+          PR_AF_MODEL: openrouter/z-ai/glm-5.2
+        run: |
+          docker compose up -d --wait --wait-timeout 300
+          docker compose ps
+
+      - name: Execute Deep Architectural Audit
+        working-directory: ./pr-af
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          python3 scripts/ci_runner.py
+
+      - name: Dump PR-AF logs on failure
+        if: failure()
+        working-directory: ./pr-af
+        run: docker compose logs
