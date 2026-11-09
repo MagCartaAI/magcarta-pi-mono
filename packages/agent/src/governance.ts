@@ -22,7 +22,9 @@ import type {
 	AuthorizationDecision,
 	ClassificationChain,
 	ConnectorEnvelope,
+	ConnectorLlmResult,
 	HttpConnectorEnvelope,
+	LlmInvokeRequest,
 } from "./connector/types.js";
 
 export type ToolType = "http" | "db" | "browser" | "llm";
@@ -127,6 +129,11 @@ export interface GovernanceAuthorizer {
  * Execution surface — only used in proxy mode. Runtimes that never use
  * proxy mode do not need to implement this interface. Phase 1 defines
  * the shape; Phase 9 (WE2-036) adds real implementations in GatewayProvider.
+ *
+ * `executeLlm` takes the flattened loop→provider request (not a pre-built
+ * envelope) and resolves to a buffered `ConnectorLlmResult` when
+ * `request.stream` is false, or an `AsyncGenerator<string>` of token chunks
+ * when it is true. The provider owns envelope minting.
  */
 export interface ConnectorExecutor {
 	executeHttp(envelope: HttpConnectorEnvelope): Promise<unknown>;
@@ -134,7 +141,7 @@ export interface ConnectorExecutor {
 	executeFileRead(envelope: ConnectorEnvelope): Promise<unknown>;
 	executeFileWrite(envelope: ConnectorEnvelope): Promise<unknown>;
 	executeFileDelete(envelope: ConnectorEnvelope): Promise<unknown>;
-	executeLlm(envelope: ConnectorEnvelope): Promise<unknown>;
+	executeLlm(request: LlmInvokeRequest, signal?: AbortSignal): Promise<ConnectorLlmResult | AsyncGenerator<string>>;
 	executeBrowser(envelope: ConnectorEnvelope): Promise<never>;
 }
 

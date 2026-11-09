@@ -11,6 +11,7 @@ import {
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@mariozechner/pi-ai";
+import { dispatchViaConnector } from "./connector-dispatch.js";
 import type { ActionEnvelopeBuilder, AdrEvent, GovernanceContext, GovernanceProvider } from "./governance.js";
 import type {
 	AgentContext,
@@ -293,6 +294,14 @@ async function streamAssistantResponse(
 		messages: llmMessages,
 		tools: context.tools,
 	};
+
+	// Connector proxy-mode dispatch — replaces getApiKey + streamFunction.
+	// The loop flattens the conversation into a LlmInvokeRequest and calls
+	// executeLlm once; the provider mints the envelope and the gateway
+	// authorizes + executes upstream. No local API key is resolved.
+	if (config.connectorProvider && config.connectorContext?.connector_mode === "proxy") {
+		return await dispatchViaConnector(context, config, llmMessages, signal, stream);
+	}
 
 	const streamFunction = streamFn || streamSimple;
 

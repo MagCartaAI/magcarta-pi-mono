@@ -8,7 +8,7 @@
  */
 
 import type { ToolRegistry } from "./tool-registry.js";
-import type { ConnectorEnvelope, HttpConnectorRequest } from "./types.js";
+import type { HttpConnectorEnvelope, HttpConnectorRequest } from "./types.js";
 
 export interface BuildEnvelopeInput {
 	readonly tool_name: string;
@@ -26,7 +26,7 @@ export class ConnectorEnvelopeBuilder {
 	 * HTTP connector tools are supported — looking up a non-HTTP tool throws.
 	 * Phase 2 adds DB/File/LLM/Browser paths.
 	 */
-	build(input: BuildEnvelopeInput): ConnectorEnvelope {
+	build(input: BuildEnvelopeInput): HttpConnectorEnvelope {
 		const binding = this.registry.lookup(input.tool_name);
 		if (!binding) {
 			throw new Error(
