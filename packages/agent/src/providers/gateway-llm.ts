@@ -189,6 +189,8 @@ function mintLlmEnvelope(deps: LlmInvokeDeps, request: LlmInvokeRequest): LlmCon
 			model: request.model,
 			messages,
 			stream: request.stream,
+			...(request.max_tokens !== undefined ? { max_tokens: request.max_tokens } : {}),
+			...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
 		},
 	};
 }
@@ -238,8 +240,11 @@ async function readLlmResult(response: GatewayResponse, gatewayUrl: string): Pro
  */
 async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): AsyncGenerator<string> {
 	const decoder = new TextDecoder();
+	const MAX_SSE_BUFFER = 1 << 20; // 1 MiB — an unterminated line or a run of
+	// data: lines with no blank line must not grow the buffer without bound.
 	let pending = "";
 	let dataLines: string[] = [];
+	let dataLinesBytes = 0;
 	let sawDone = false;
 
 	function* handleFrame(data: string): Generator<string> {
@@ -278,6 +283,9 @@ async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): 
 				const { done, value } = await reader.read();
 				if (done) break;
 				pending += decoder.decode(value, { stream: true });
+				if (pending.length > MAX_SSE_BUFFER) {
+					throw new GatewayUnavailable(gatewayUrl, new Error("SSE line exceeded maximum buffer size"));
+				}
 				for (;;) {
 					const newlineIndex = pending.indexOf("\n");
 					if (newlineIndex < 0) break;
@@ -285,17 +293,22 @@ async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): 
 					pending = pending.slice(newlineIndex + 1);
 					if (line.startsWith("data:")) {
 						dataLines.push(line.slice(5).replace(/^ /, ""));
+						dataLinesBytes += line.length;
+						if (dataLinesBytes > MAX_SSE_BUFFER) {
+							throw new GatewayUnavailable(gatewayUrl, new Error("SSE data block exceeded maximum buffer size"));
+						}
 					} else if (line === "" && dataLines.length > 0) {
 						const data = dataLines.join("\n");
 						dataLines = [];
+						dataLinesBytes = 0;
 						yield* handleFrame(data);
 						if (sawDone) return;
 					}
 				}
 			}
 		} finally {
-			reader.releaseLock();
 			await reader.cancel().catch(() => {});
+			reader.releaseLock();
 		}
 	} else if (response.text) {
 		pending = await response.text();

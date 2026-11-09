@@ -136,6 +136,8 @@ export interface LlmInvokeRequest {
 	readonly systemPrompt?: string;
 	readonly messages: ReadonlyArray<LlmWireMessage>;
 	readonly stream: boolean;
+	readonly max_tokens?: number;
+	readonly temperature?: number;
 }
 
 /**

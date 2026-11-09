@@ -53,14 +53,21 @@ function connectorAssistantMessage(
 	text: string,
 	config: AgentLoopConfig,
 	stopReason: AssistantMessage["stopReason"],
+	usage?: ConnectorLlmResult["usage"],
 ): AssistantMessage {
+	const tokenUsage = emptyConnectorUsage();
+	if (usage) {
+		tokenUsage.input = usage.prompt_tokens;
+		tokenUsage.output = usage.completion_tokens;
+		tokenUsage.totalTokens = usage.total_tokens;
+	}
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
 		api: config.model.api ?? "openai-completions",
 		provider: config.model.provider,
 		model: config.model.id,
-		usage: emptyConnectorUsage(),
+		usage: tokenUsage,
 		stopReason,
 		timestamp: Date.now(),
 	};
@@ -96,6 +103,8 @@ export async function dispatchViaConnector(
 		systemPrompt: context.systemPrompt,
 		messages: llmMessages.map(flattenLlmMessage),
 		stream: true,
+		...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
+		...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
 	};
 	let result: ConnectorLlmResult | AsyncGenerator<string>;
 	try {
@@ -115,7 +124,7 @@ export async function dispatchViaConnector(
 	}
 
 	if (!isTokenStream(result)) {
-		const finalMessage = connectorAssistantMessage(result.text, config, "stop");
+		const finalMessage = connectorAssistantMessage(result.text, config, "stop", result.usage);
 		context.messages.push(finalMessage);
 		stream.push({ type: "message_start", message: { ...finalMessage } });
 		stream.push({ type: "message_end", message: finalMessage });
@@ -142,6 +151,15 @@ export async function dispatchViaConnector(
 				if (signal?.aborted) {
 					aborted = true;
 					break;
+				}
+				// A stream failure after message_start must still close the
+				// assistant message: emit message_end with the text received so
+				// far, then propagate — otherwise the unmatched start leaves a
+				// stale partial a retry would append to.
+				if (partialMessage) {
+					const failedMessage = connectorAssistantMessage(accumulated, config, "error");
+					context.messages[context.messages.length - 1] = failedMessage;
+					stream.push({ type: "message_end", message: failedMessage });
 				}
 				throw err;
 			}
