@@ -1,5 +1,5 @@
 import { Agent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { getModels } from "@mariozechner/pi-ai";
+import { getModels, getProviders } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -8,9 +8,12 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-// Resolve against the live catalog — the generated model union rotates ids.
-const reasoningModel = getModels("anthropic").find((m) => m.reasoning)!;
-const nonReasoningModel = getModels("anthropic").find((m) => !m.reasoning)!;
+// Resolve against the live catalog — the generated model union rotates ids and
+// per-provider reasoning coverage shifts (e.g. anthropic went all-reasoning).
+// Search every provider so a pair always exists regardless of the regenerated union.
+const allModels = getProviders().flatMap((p) => getModels(p));
+const reasoningModel = allModels.find((m) => m.reasoning)!;
+const nonReasoningModel = allModels.find((m) => !m.reasoning)!;
 
 function createSession({
 	thinkingLevel = "high",
@@ -24,7 +27,8 @@ function createSession({
 	const settingsManager = SettingsManager.inMemory({ defaultThinkingLevel });
 	const sessionManager = SessionManager.inMemory();
 	const authStorage = AuthStorage.inMemory();
-	authStorage.setRuntimeApiKey("anthropic", "test-key");
+	authStorage.setRuntimeApiKey(reasoningModel.provider, "test-key");
+	authStorage.setRuntimeApiKey(nonReasoningModel.provider, "test-key");
 	const session = new AgentSession({
 		agent: new Agent({
 			getApiKey: () => "test-key",
