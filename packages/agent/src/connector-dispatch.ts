@@ -20,14 +20,23 @@ import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./
  * `TextContent.text` blocks and drops non-text blocks
  * (thinking/toolCall/image) — the text-only journey.
  *
- * `toolResult` returns `null`: flattening drops the assistant `toolCall`
- * blocks that a `tool` wire message's `tool_call_id` must answer, so
- * emitting it would send an orphaned tool result the OpenAI-style chat API
- * rejects. Dropping the result keeps the history consistent.
+ * `toolResult` folds into a `user` message labelled with the tool name. The
+ * contract message schema has no `assistant.tool_calls`, so a `tool`-role
+ * wire message would have no call to answer and the provider rejects it as
+ * orphaned — but dropping the result means a `agentLoopContinue` turn loses
+ * what the tool returned. Folding the result into `user` text preserves it
+ * for the model without needing `tool_calls` on the wire.
  */
-function flattenLlmMessage(message: Message): LlmWireMessage | null {
+function flattenLlmMessage(message: Message): LlmWireMessage {
 	if (message.role === "toolResult") {
-		return null;
+		const text = message.content
+			.filter((block): block is TextContent => block.type === "text")
+			.map((block) => block.text)
+			.join("");
+		return {
+			role: "user",
+			content: `[tool result for ${message.toolName}]: ${text}`,
+		};
 	}
 	if (typeof message.content === "string") {
 		return { role: message.role, content: message.content };
@@ -102,9 +111,7 @@ export async function dispatchViaConnector(
 	const request: LlmInvokeRequest = {
 		model: config.model.id,
 		systemPrompt: context.systemPrompt,
-		messages: llmMessages
-			.map(flattenLlmMessage)
-			.filter((wireMessage): wireMessage is LlmWireMessage => wireMessage !== null),
+		messages: llmMessages.map(flattenLlmMessage),
 		stream: true,
 		...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
 		...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
