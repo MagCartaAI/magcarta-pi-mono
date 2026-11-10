@@ -74,6 +74,19 @@ export interface HttpConnectorRequest {
 	readonly query_params?: Readonly<Record<string, string>>;
 }
 
+// --- Credential reference (proxy-mode secret addressing) ---
+
+/**
+ * A reference to a secret stored in a secrets backend — never the raw secret.
+ * Mirrors the contracts `CredentialRefSchema`; required on proxy-mode
+ * envelopes so the gateway can resolve the upstream credential at call time.
+ */
+export interface CredentialRef {
+	readonly backend_id: "env" | "aws_ssm" | "vault" | "custom";
+	readonly path: string;
+	readonly version?: string;
+}
+
 // --- Base envelope fields shared by every connector ---
 
 export interface BaseConnectorEnvelope {
@@ -88,6 +101,7 @@ export interface BaseConnectorEnvelope {
 	readonly action_id: ConnectorActionId;
 	readonly action_timestamp: string;
 	readonly classification_hints?: ReadonlyArray<Classification>;
+	readonly credential_ref?: CredentialRef;
 }
 
 export interface HttpConnectorEnvelope extends BaseConnectorEnvelope {
@@ -96,11 +110,95 @@ export interface HttpConnectorEnvelope extends BaseConnectorEnvelope {
 	readonly request: HttpConnectorRequest;
 }
 
+// --- LLM connector shapes ---
+
 /**
- * The Phase 1 thin-slice ConnectorEnvelope union. Currently only HTTP is wired;
- * Phase 2 (WE2-009) broadens to DB/File/LLM/Browser variants.
+ * One wire message on the LLM invoke request. `content` is always a plain
+ * string on the wire — the agent loop flattens pi-ai content blocks into
+ * text before the request is built. Mirrors the contract's strict message
+ * object (`role` enum, `content` string, optional `name`/`tool_call_id`).
  */
-export type ConnectorEnvelope = HttpConnectorEnvelope;
+export interface LlmWireMessage {
+	readonly role: "system" | "user" | "assistant" | "tool";
+	readonly content: string;
+	readonly name?: string;
+	readonly tool_call_id?: string;
+	/** Assistant turns that call tools carry the OpenAI-compatible tool_calls
+	 * array the gateway forwards untouched to the upstream provider. */
+	readonly tool_calls?: ReadonlyArray<unknown>;
+}
+
+/**
+ * Loop→provider hand-off payload for one LLM turn. This is NOT the wire
+ * envelope — the provider mints the `LlmConnectorEnvelope` from it. The
+ * `systemPrompt` travels its own field here and the provider folds it into
+ * `messages[0]` because the contract request is strict with no sibling.
+ */
+export interface LlmInvokeRequest {
+	readonly model: string;
+	readonly systemPrompt?: string;
+	readonly messages: ReadonlyArray<LlmWireMessage>;
+	readonly stream: boolean;
+	readonly max_tokens?: number;
+	readonly temperature?: number;
+}
+
+/**
+ * The invoke body embedded in an `LlmConnectorEnvelope.request`. Mirrors the
+ * contracts `LlmConnectorEnvelopeSchema.request` — strict, no `systemPrompt`.
+ */
+export interface LlmConnectorRequest {
+	readonly model: string;
+	readonly messages: ReadonlyArray<LlmWireMessage>;
+	readonly stream: boolean;
+	readonly max_tokens?: number;
+	readonly temperature?: number;
+	readonly tools?: ReadonlyArray<unknown>;
+	readonly response_format?: unknown;
+}
+
+export interface LlmConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "llm";
+	readonly action_id: "connector::llm::invoke";
+	readonly request: LlmConnectorRequest;
+}
+
+/**
+ * Client-visible non-streaming invoke result — the post-scan upstream
+ * `chat.completion` projected onto a flat shape. Streaming calls return an
+ * `AsyncGenerator<string>` of token chunks instead of this object.
+ */
+export interface ConnectorLlmResult {
+	readonly text: string;
+	readonly model: string;
+	readonly usage?: {
+		readonly prompt_tokens: number;
+		readonly completion_tokens: number;
+		readonly total_tokens: number;
+	};
+	readonly blocked?: boolean;
+}
+
+/**
+ * Identity the provider needs to mint a `LlmConnectorEnvelope`. Carried on
+ * `AgentLoopConfig.connectorContext` and on `GatewayProviderConfig` — the
+ * same record drives both the loop's dispatch decision and the provider's
+ * envelope fields.
+ */
+export interface ConnectorContext {
+	readonly tenant_id: string;
+	readonly agent_id: string;
+	readonly agent_did: string;
+	readonly connector_id: string;
+	readonly connector_mode: ConnectorMode;
+	readonly credential_ref?: CredentialRef;
+}
+
+/**
+ * The ConnectorEnvelope union. Currently HTTP is wired for `authorize()`;
+ * the LLM variant is wired for proxy-mode `executeLlm` (WE2 Phase 8).
+ */
+export type ConnectorEnvelope = HttpConnectorEnvelope | LlmConnectorEnvelope;
 
 // --- Authorization decision ---
 

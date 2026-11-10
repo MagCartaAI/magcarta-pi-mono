@@ -10,9 +10,11 @@ import type {
 	ToolResultMessage,
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
+import type { ConnectorContext } from "./connector/types.js";
 import type {
 	ActionEnvelope,
 	ActionEnvelopeBuilder,
+	ConnectorExecutor,
 	GatewayDecision,
 	GovernanceContext,
 	GovernanceProvider,
@@ -109,6 +111,20 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	governanceContext?: GovernanceContext;
 	/** Builds ActionEnvelope payloads from tool/LLM call data. */
 	envelopeBuilder?: ActionEnvelopeBuilder;
+
+	/**
+	 * Connector executor used for LLM dispatch when `connectorContext.connector_mode`
+	 * is `"proxy"`. When both this and `connectorContext` are set and the mode is
+	 * proxy, the loop routes each turn through `connectorProvider.executeLlm`
+	 * instead of resolving an API key and calling `streamFunction` directly.
+	 */
+	connectorProvider?: ConnectorExecutor;
+	/**
+	 * Connector identity for proxy-mode dispatch — the tenant/agent/connector
+	 * triple plus mode and credential reference the provider mints into each
+	 * `LlmConnectorEnvelope`. Absent (or non-proxy mode) keeps legacy dispatch.
+	 */
+	connectorContext?: ConnectorContext;
 }
 
 /**

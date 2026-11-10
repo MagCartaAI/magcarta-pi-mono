@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { getModel } from "../src/models.js";
 import { complete, getEnvApiKey } from "../src/stream.js";
 import type { AssistantMessage, Context, Message, Tool, ToolCall } from "../src/types.js";
+import { testModel } from "./helpers.js";
 
 const testToolSchema = Type.Object({
 	value: Type.Number({ description: "A number to double" }),
@@ -91,7 +92,7 @@ describe.skipIf(!process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY)(
 			// 6. With fix: tool calls/results converted to text, conversation continues
 
 			const modelA = getModel("openai", "gpt-5-mini");
-			const modelB = getModel("openai", "gpt-5.2-codex");
+			const modelB = testModel("openai", (m) => m.id.includes("codex"));
 
 			const apiKey = getEnvApiKey("openai");
 			if (!apiKey) {
@@ -190,7 +191,7 @@ describe.skipIf(!process.env.OPENAI_API_KEY || !process.env.ANTHROPIC_API_KEY)(
 			// 5. Should work because foreign IDs have no pairing expectation
 
 			const anthropicModel = getModel("anthropic", "claude-sonnet-4-5");
-			const codexModel = getModel("openai", "gpt-5.2-codex");
+			const codexModel = testModel("openai", (m) => m.id.includes("codex"));
 
 			const anthropicApiKey = getEnvApiKey("anthropic");
 			const openaiApiKey = getEnvApiKey("openai");

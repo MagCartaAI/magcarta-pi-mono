@@ -39,3 +39,5 @@ todo.md
 .entire
 .factory
 .opencode
+# E2E test artifacts (per-run output)
+packages/agent/tests/e2e/artifacts/

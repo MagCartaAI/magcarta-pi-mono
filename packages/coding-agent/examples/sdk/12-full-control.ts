@@ -8,7 +8,7 @@
  * paths relative to your cwd.
  */
 
-import { getModel } from "@mariozechner/pi-ai";
+import { getModels } from "@mariozechner/pi-ai";
 import {
 	AuthStorage,
 	createAgentSession,
@@ -32,7 +32,7 @@ if (process.env.MY_ANTHROPIC_KEY) {
 // Model registry with no custom models.json
 const modelRegistry = new ModelRegistry(authStorage);
 
-const model = getModel("anthropic", "claude-sonnet-4-20250514");
+const model = getModels("anthropic")[0];
 if (!model) throw new Error("Model not found");
 
 // In-memory settings with overrides

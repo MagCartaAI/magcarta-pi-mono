@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getModel } from "../src/models.js";
 import { streamSimple } from "../src/stream.js";
 import type { Tool } from "../src/types.js";
+import { testModel } from "./helpers.js";
 
 const mockState = vi.hoisted(() => ({ lastParams: undefined as unknown }));
 
@@ -121,7 +122,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("maps groq qwen3 reasoning levels to default reasoning_effort", async () => {
-		const model = getModel("groq", "qwen/qwen3-32b")!;
+		const model = testModel("groq", (m) => m.id.startsWith("qwen/qwen3"));
 		let payload: unknown;
 
 		await streamSimple(

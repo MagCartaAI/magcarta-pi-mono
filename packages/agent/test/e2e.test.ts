@@ -1,5 +1,5 @@
 import type { AssistantMessage, Model, ToolResultMessage, UserMessage } from "@mariozechner/pi-ai";
-import { getModel } from "@mariozechner/pi-ai";
+import { getModel, getModels } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import { Agent } from "../src/index.js";
 import { hasBedrockCredentials } from "./bedrock-utils.js";
@@ -231,7 +231,7 @@ describe("Agent E2E Tests", () => {
 	});
 
 	describe.skipIf(!process.env.XAI_API_KEY)("xAI Provider (grok-3)", () => {
-		const model = getModel("xai", "grok-3");
+		const model = getModels("xai")[0]!;
 
 		it("should handle basic text prompt", async () => {
 			await basicPrompt(model);

@@ -16,8 +16,11 @@
 
 import {
 	type AuthorizationDecision,
+	type ConnectorContext,
 	type ConnectorEnvelope,
+	type ConnectorLlmResult,
 	type HttpConnectorEnvelope,
+	type LlmInvokeRequest,
 	NotImplementedError,
 } from "../connector/types.js";
 import type {
@@ -26,6 +29,31 @@ import type {
 	ConnectorAdrEvent,
 	MagCartaProvider,
 } from "../governance.js";
+import { executeLlmInvoke } from "./gateway-llm.js";
+
+export {
+	ClassificationBlocked,
+	ConnectorRejected,
+	GatewayUnavailable,
+	GovernanceDenied,
+	ModeMismatch,
+	SubjectBindingViolation,
+} from "./gateway-llm.js";
+
+/**
+ * Minimal `Response`-compatible surface the provider reads. `body` is the
+ * WHATWG byte stream used by `executeLlm` for SSE token frames; `json()` and
+ * `text()` cover the buffered paths. A hand-rolled fetch double that only
+ * implements `{ ok, status, json }` still satisfies the authorize() contract —
+ * `body`/`text` are optional and only dereferenced on the streaming path.
+ */
+export interface GatewayResponse {
+	readonly ok: boolean;
+	readonly status: number;
+	json(): Promise<unknown>;
+	text?(): Promise<string>;
+	readonly body?: ReadableStream<Uint8Array> | null;
+}
 
 export type FetchLike = (
 	input: string,
@@ -33,16 +61,18 @@ export type FetchLike = (
 		method?: string;
 		headers?: Record<string, string>;
 		body?: string;
+		signal?: AbortSignal;
 	},
-) => Promise<{
-	ok: boolean;
-	status: number;
-	json(): Promise<unknown>;
-}>;
+) => Promise<GatewayResponse>;
 
 export interface GatewayProviderConfig {
 	readonly gateway_url: string;
 	readonly token_provider: () => Promise<string> | string;
+	/**
+	 * Connector identity used by `executeLlm` to mint each `LlmConnectorEnvelope`.
+	 * Optional because `authorize()`-only consumers never mint envelopes.
+	 */
+	readonly connectorContext?: ConnectorContext;
 	readonly fetch?: FetchLike;
 }
 
@@ -55,11 +85,13 @@ export interface GatewayProviderConfig {
 export class GatewayProvider implements MagCartaProvider {
 	private readonly gatewayUrl: string;
 	private readonly tokenProvider: () => Promise<string> | string;
+	private readonly connectorContext?: ConnectorContext;
 	private readonly fetchImpl: FetchLike;
 
 	constructor(config: GatewayProviderConfig) {
 		this.gatewayUrl = config.gateway_url.replace(/\/+$/, "");
 		this.tokenProvider = config.token_provider;
+		this.connectorContext = config.connectorContext;
 		this.fetchImpl = config.fetch ?? (defaultFetch as FetchLike);
 	}
 
@@ -187,8 +219,31 @@ export class GatewayProvider implements MagCartaProvider {
 		throw new NotImplementedError("GatewayProvider.executeFileDelete", "Phase 1");
 	}
 
-	async executeLlm(_envelope: ConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeLlm", "Phase 1");
+	/**
+	 * Single owner of `LlmConnectorEnvelope` minting (WE2 Phase 8). Takes the
+	 * flattened loop→provider request plus this provider's `connectorContext`,
+	 * builds the full wire envelope, POSTs `/api/connector/llm/invoke`, and
+	 * returns a buffered `ConnectorLlmResult` (`request.stream === false`) or
+	 * an `AsyncGenerator<string>` of token chunks (`request.stream === true`).
+	 * Envelope minting, SSE parsing, and the error taxonomy live in
+	 * `gateway-llm.ts`; pre-dispatch failures surface as `GatewayProviderError`
+	 * via the `clientError` callback.
+	 */
+	async executeLlm(
+		request: LlmInvokeRequest,
+		signal?: AbortSignal,
+	): Promise<ConnectorLlmResult | AsyncGenerator<string>> {
+		return executeLlmInvoke(
+			{
+				gatewayUrl: this.gatewayUrl,
+				connectorContext: this.connectorContext,
+				tokenProvider: this.tokenProvider,
+				fetchImpl: this.fetchImpl,
+				clientError: (code, message) => new GatewayProviderError(code, message, 0),
+			},
+			request,
+			signal,
+		);
 	}
 
 	async executeBrowser(_envelope: ConnectorEnvelope): Promise<never> {
@@ -400,13 +455,11 @@ function isAuthorizationDecision(value: unknown): value is AuthorizationDecision
 /**
  * Lightweight wrapper around the global `fetch` to normalize the return
  * shape. Avoids a hard dependency on undici/node-fetch since the package is
- * intended to run in both Node and browser contexts.
+ * intended to run in both Node and browser contexts. The returned `Response`
+ * is passed through directly so `executeLlm` can read `body` for SSE frames
+ * and `signal` threads into the upstream request.
  */
 const defaultFetch: FetchLike = async (input, init) => {
 	const response = await globalThis.fetch(input, init as RequestInit);
-	return {
-		ok: response.ok,
-		status: response.status,
-		json: () => response.json() as Promise<unknown>,
-	};
+	return response;
 };
