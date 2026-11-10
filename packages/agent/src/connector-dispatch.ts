@@ -15,18 +15,19 @@ import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./
 
 /**
  * Flatten one `convertToLlm` message into a wire message for the invoke
- * request. String content passes through unchanged; array content
- * concatenates `TextContent.text` blocks and drops non-text blocks
- * (thinking/toolCall/image) — the text-only journey. `toolResult` maps to
- * the contract `"tool"` role carrying `tool_call_id`/`name`.
+ * request, or `null` when the message cannot appear on the wire. String
+ * content passes through unchanged; array content concatenates
+ * `TextContent.text` blocks and drops non-text blocks
+ * (thinking/toolCall/image) — the text-only journey.
+ *
+ * `toolResult` returns `null`: flattening drops the assistant `toolCall`
+ * blocks that a `tool` wire message's `tool_call_id` must answer, so
+ * emitting it would send an orphaned tool result the OpenAI-style chat API
+ * rejects. Dropping the result keeps the history consistent.
  */
-function flattenLlmMessage(message: Message): LlmWireMessage {
+function flattenLlmMessage(message: Message): LlmWireMessage | null {
 	if (message.role === "toolResult") {
-		const text = message.content
-			.filter((block): block is TextContent => block.type === "text")
-			.map((block) => block.text)
-			.join("");
-		return { role: "tool", content: text, tool_call_id: message.toolCallId, name: message.toolName };
+		return null;
 	}
 	if (typeof message.content === "string") {
 		return { role: message.role, content: message.content };
@@ -101,7 +102,9 @@ export async function dispatchViaConnector(
 	const request: LlmInvokeRequest = {
 		model: config.model.id,
 		systemPrompt: context.systemPrompt,
-		messages: llmMessages.map(flattenLlmMessage),
+		messages: llmMessages
+			.map(flattenLlmMessage)
+			.filter((wireMessage): wireMessage is LlmWireMessage => wireMessage !== null),
 		stream: true,
 		...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
 		...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
@@ -132,6 +135,9 @@ export async function dispatchViaConnector(
 	}
 
 	const iterator = result[Symbol.asyncIterator]();
+	// The gateway stream exposes the terminal OpenAI finish_reason on the
+	// generator once iteration completes; read it to map truncation.
+	const tokenStream = result as { finishReason?: string };
 	let partialMessage: AssistantMessage | null = null;
 	let accumulated = "";
 	let aborted = false;
@@ -158,6 +164,7 @@ export async function dispatchViaConnector(
 				// stale partial a retry would append to.
 				if (partialMessage) {
 					const failedMessage = connectorAssistantMessage(accumulated, config, "error");
+					failedMessage.errorMessage = err instanceof Error ? err.message : String(err);
 					context.messages[context.messages.length - 1] = failedMessage;
 					stream.push({ type: "message_end", message: failedMessage });
 				}
@@ -195,7 +202,13 @@ export async function dispatchViaConnector(
 		}
 	}
 
-	const stopReason: AssistantMessage["stopReason"] = aborted ? "aborted" : "stop";
+	// A finish_reason of "length" means the completion was cut off by
+	// max_tokens — surface it as the "length" stop reason, not a clean stop.
+	const stopReason: AssistantMessage["stopReason"] = aborted
+		? "aborted"
+		: tokenStream.finishReason === "length"
+			? "length"
+			: "stop";
 	const finalMessage = connectorAssistantMessage(accumulated, config, stopReason);
 	if (partialMessage) {
 		context.messages[context.messages.length - 1] = finalMessage;

@@ -107,7 +107,7 @@ export async function executeLlmInvoke(
 	deps: LlmInvokeDeps,
 	request: LlmInvokeRequest,
 	signal?: AbortSignal,
-): Promise<ConnectorLlmResult | AsyncGenerator<string>> {
+): Promise<ConnectorLlmResult | LlmTokenStream> {
 	const envelope = mintLlmEnvelope(deps, request);
 	let token: string;
 	try {
@@ -231,28 +231,57 @@ async function readLlmResult(response: GatewayResponse, gatewayUrl: string): Pro
 }
 
 /**
- * Parse the SSE token stream into an `AsyncGenerator<string>`. Each
- * `data:` frame is a `chat.completion.chunk`; `delta.content` strings are
- * yielded verbatim. `data: [DONE]` terminates the iterator. A mid-stream
- * `data: {"error":"…"}` string frame raises `ClassificationBlocked` from
- * inside the iterator — the governance block surface, not a transport
- * failure. A stream that ends without `[DONE]` raises `GatewayUnavailable`.
+ * The token stream `streamLlmTokens` returns. Yields `delta.content`
+ * strings verbatim and exposes the stream's terminal OpenAI
+ * `finish_reason` on `finishReason` once iteration completes (`"stop"`,
+ * `"length"`, …) so the dispatcher can tell a clean stop from a max_tokens
+ * truncation. `finishReason` is `undefined` until the stream produces a
+ * chunk that carries it.
  */
-async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): AsyncGenerator<string> {
-	const decoder = new TextDecoder();
-	const MAX_SSE_BUFFER = 1 << 20; // 1 MiB — an unterminated line or a run of
-	// data: lines with no blank line must not grow the buffer without bound.
-	let pending = "";
+export type LlmTokenStream = AsyncGenerator<string> & { finishReason?: string };
+
+/**
+ * Parse the SSE token stream into an `LlmTokenStream`. Each `data:` frame
+ * is a `chat.completion.chunk`; `delta.content` strings are yielded
+ * verbatim and the chunk's `finish_reason` is recorded on the returned
+ * generator's `finishReason`. `data: [DONE]` terminates the iterator. A
+ * mid-stream `data: {"error":"…"}` string frame raises
+ * `ClassificationBlocked` from inside the iterator — the governance block
+ * surface, not a transport failure. A stream that ends without `[DONE]`
+ * raises `GatewayUnavailable`.
+ */
+function streamLlmTokens(response: GatewayResponse, gatewayUrl: string): LlmTokenStream {
+	// The inner generator can't reference its own instance, so it records
+	// finish_reason on `holder`; the getter surfaces it on the returned stream.
+	const holder: { finishReason?: string } = {};
+	const stream = streamLlmTokenChunks(response, gatewayUrl, holder) as LlmTokenStream;
+	Object.defineProperty(stream, "finishReason", {
+		get: () => holder.finishReason,
+		enumerable: true,
+	});
+	return stream;
+}
+
+async function* streamLlmTokenChunks(
+	response: GatewayResponse,
+	gatewayUrl: string,
+	holder: { finishReason?: string },
+): AsyncGenerator<string> {
+	const MAX_SSE_BUFFER = 1 << 20; // 1 MiB cap on one unterminated data block
+	// or one line — the counter resets at each blank-line event boundary.
+	let sawDone = false;
 	let dataLines: string[] = [];
 	let dataLinesBytes = 0;
-	let sawDone = false;
 
 	function* handleFrame(data: string): Generator<string> {
 		if (data === "[DONE]") {
 			sawDone = true;
 			return;
 		}
-		let frame: { error?: unknown; choices?: Array<{ delta?: { content?: unknown } }> };
+		let frame: {
+			error?: unknown;
+			choices?: Array<{ delta?: { content?: unknown }; finish_reason?: unknown }>;
+		};
 		try {
 			frame = JSON.parse(data);
 		} catch (err) {
@@ -266,7 +295,12 @@ async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): 
 		}
 		const choices = frame.choices;
 		if (Array.isArray(choices) && choices.length > 0) {
-			const token = choices[0]?.delta?.content;
+			const firstChoice = choices[0];
+			const finishReason = firstChoice?.finish_reason;
+			if (typeof finishReason === "string") {
+				holder.finishReason = finishReason;
+			}
+			const token = firstChoice?.delta?.content;
 			if (token !== undefined && token !== null) {
 				if (typeof token !== "string") {
 					throw new GatewayUnavailable(gatewayUrl, new TypeError("Invalid chat completion token"));
@@ -276,34 +310,49 @@ async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): 
 		}
 	}
 
+	/**
+	 * Consume one complete line. Complete lines are drained before the
+	 * `pending` cap is enforced, so a long valid stream of many short lines
+	 * never trips the buffer guard — only a genuinely oversized line or
+	 * trailing fragment does.
+	 */
+	function* handleLine(line: string): Generator<string> {
+		if (line.startsWith("data:")) {
+			dataLines.push(line.slice(5).replace(/^ /, ""));
+			dataLinesBytes += line.length;
+			if (dataLinesBytes > MAX_SSE_BUFFER) {
+				throw new GatewayUnavailable(gatewayUrl, new Error("SSE data block exceeded maximum buffer size"));
+			}
+		} else if (line === "" && dataLines.length > 0) {
+			const data = dataLines.join("\n");
+			dataLines = [];
+			dataLinesBytes = 0;
+			yield* handleFrame(data);
+		}
+	}
+
 	if (response.body) {
+		const decoder = new TextDecoder();
 		const reader = response.body.getReader();
+		let pending = "";
 		try {
 			for (;;) {
 				const { done, value } = await reader.read();
 				if (done) break;
 				pending += decoder.decode(value, { stream: true });
-				if (pending.length > MAX_SSE_BUFFER) {
-					throw new GatewayUnavailable(gatewayUrl, new Error("SSE line exceeded maximum buffer size"));
-				}
+				// Drain every complete line first, then enforce the cap on the
+				// remaining unterminated fragment — mirrors the Python SDK's
+				// `iter_lines()` complete-line semantics.
 				for (;;) {
 					const newlineIndex = pending.indexOf("\n");
 					if (newlineIndex < 0) break;
 					const line = pending.slice(0, newlineIndex).replace(/\r$/, "");
 					pending = pending.slice(newlineIndex + 1);
-					if (line.startsWith("data:")) {
-						dataLines.push(line.slice(5).replace(/^ /, ""));
-						dataLinesBytes += line.length;
-						if (dataLinesBytes > MAX_SSE_BUFFER) {
-							throw new GatewayUnavailable(gatewayUrl, new Error("SSE data block exceeded maximum buffer size"));
-						}
-					} else if (line === "" && dataLines.length > 0) {
-						const data = dataLines.join("\n");
-						dataLines = [];
-						dataLinesBytes = 0;
-						yield* handleFrame(data);
-						if (sawDone) return;
-					}
+					yield* handleLine(line);
+					if (sawDone) return;
+				}
+				if (pending.length > MAX_SSE_BUFFER) {
+					throw new GatewayUnavailable(gatewayUrl, new Error("SSE line exceeded maximum buffer size"));
 				}
 			}
 		} finally {
@@ -311,17 +360,9 @@ async function* streamLlmTokens(response: GatewayResponse, gatewayUrl: string): 
 			reader.releaseLock();
 		}
 	} else if (response.text) {
-		pending = await response.text();
-		for (const line of pending.split("\n")) {
-			const trimmed = line.replace(/\r$/, "");
-			if (trimmed.startsWith("data:")) {
-				dataLines.push(trimmed.slice(5).replace(/^ /, ""));
-			} else if (trimmed === "" && dataLines.length > 0) {
-				const data = dataLines.join("\n");
-				dataLines = [];
-				yield* handleFrame(data);
-				if (sawDone) return;
-			}
+		for (const line of (await response.text()).split("\n")) {
+			yield* handleLine(line.replace(/\r$/, ""));
+			if (sawDone) return;
 		}
 	}
 	if (!sawDone) {

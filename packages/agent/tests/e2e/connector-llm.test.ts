@@ -1,4 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { type AssistantMessage, EventStream, type AssistantMessageEvent, type Message, type Model } from "@mariozechner/pi-ai";
 import { expect, it, vi } from "vitest";
 import { agentLoop } from "../../src/agent-loop.js";
@@ -116,7 +118,13 @@ it("routes connector turns through one governed dispatch with typed failures and
 		gates.push("missing connector context retains legacy authorization");
 		outcome = "PASS";
 	} finally {
-		await mkdir("tests/e2e/artifacts", { recursive: true });
-		await writeFile("tests/e2e/artifacts/connector-llm.json", JSON.stringify({ outcome, gates, mocks: ["gateway HTTP response", "cancellable connector provider"] }, null, 2) + "\n");
+		// Resolve from this file's location, not the process CWD, so the run is
+		// independent of where vitest is invoked. The artifact is gitignored.
+		const artifactsDir = resolve(dirname(fileURLToPath(import.meta.url)), "artifacts");
+		await mkdir(artifactsDir, { recursive: true });
+		await writeFile(
+			resolve(artifactsDir, "connector-llm.json"),
+			JSON.stringify({ outcome, gates, mocks: ["gateway HTTP response", "cancellable connector provider"] }, null, 2) + "\n",
+		);
 	}
 });
