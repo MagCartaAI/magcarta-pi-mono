@@ -63,6 +63,67 @@ function flattenLlmMessage(message: Message): LlmWireMessage {
 	};
 }
 
+/**
+ * Normalize a tool_call id to the OpenAI wire format. Mirrors the
+ * `normalizeToolCallId` used in `openai-completions.ts`: pipe-separated
+ * Responses-API ids (`{call_id}|{opaque}`) collapse to their `call_id` part,
+ * then every id is sanitized to `[a-zA-Z0-9_-]` and truncated to 40 chars.
+ * Applied symmetrically to emitted `tool_calls[].id` and answering
+ * `tool_call_id` so a call and its result keep matching after the rewrite.
+ */
+function normalizeWireToolCallId(id: string): string {
+	const base = id.includes("|") ? id.split("|")[0] : id;
+	return base.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+}
+
+/**
+ * Pair emitted `tool_calls` with their answering `tool` messages and drop
+ * orphans both ways, then normalize ids to the OpenAI-legal shape.
+ *
+ * A `tool_calls` entry with no matching `tool_call_id` later in the history
+ * is stripped — an unanswered call makes OpenAI reject the next request.
+ * A `tool` message whose `tool_call_id` no emitted `tool_calls` answers is
+ * dropped too — it would be a dangling result. When stripping leaves an
+ * assistant turn with no `tool_calls` and empty content it is dropped; a
+ * turn that still has text keeps it.
+ */
+function reconcileToolWire(messages: LlmWireMessage[]): LlmWireMessage[] {
+	const answeredIds = new Set<string>();
+	for (const message of messages) {
+		if (message.role === "tool" && message.tool_call_id !== undefined) {
+			answeredIds.add(message.tool_call_id);
+		}
+	}
+
+	const emittedIds = new Set<string>();
+	const paired = messages.map((message): LlmWireMessage => {
+		if (message.role === "assistant" && message.tool_calls) {
+			const kept = (message.tool_calls as ReadonlyArray<{ id?: string }>).filter(
+				(call) => call.id !== undefined && answeredIds.has(call.id),
+			);
+			for (const call of kept) emittedIds.add(call.id as string);
+			const toolCalls = kept.map((call) => ({
+				...(call as Record<string, unknown>),
+				id: normalizeWireToolCallId(call.id as string),
+			}));
+			const { tool_calls: _dropped, ...rest } = message as LlmWireMessage;
+			return toolCalls.length > 0 ? { ...rest, tool_calls: toolCalls } : rest;
+		}
+		return message;
+	});
+
+	return paired.flatMap((message) => {
+		if (message.role === "tool" && message.tool_call_id !== undefined) {
+			if (!emittedIds.has(message.tool_call_id)) return [];
+			return [{ ...message, tool_call_id: normalizeWireToolCallId(message.tool_call_id) }];
+		}
+		if (message.role === "assistant" && !message.tool_calls && message.content === "") {
+			return [];
+		}
+		return [message];
+	});
+}
+
 function emptyConnectorUsage() {
 	return {
 		input: 0,
@@ -126,7 +187,7 @@ export async function dispatchViaConnector(
 	const request: LlmInvokeRequest = {
 		model: config.model.id,
 		systemPrompt: context.systemPrompt,
-		messages: llmMessages.map(flattenLlmMessage),
+		messages: reconcileToolWire(llmMessages.map(flattenLlmMessage)),
 		stream: true,
 		...(config.maxTokens !== undefined ? { max_tokens: config.maxTokens } : {}),
 		...(config.temperature !== undefined ? { temperature: config.temperature } : {}),

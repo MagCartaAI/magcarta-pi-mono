@@ -848,7 +848,7 @@ describe("Generate E2E Tests", () => {
 	// =========================================================================
 
 	describe("Anthropic OAuth Provider (claude-sonnet-4-20250514)", () => {
-		const model = testModel("anthropic");
+		const model = testModel("anthropic", (m) => m.reasoning === true);
 
 		it.skipIf(!anthropicOAuthToken)("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(model, { apiKey: anthropicOAuthToken });

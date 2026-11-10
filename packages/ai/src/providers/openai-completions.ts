@@ -833,8 +833,12 @@ function detectCompat(model: Model<"openai-completions">): Required<OpenAIComple
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isGroq = provider === "groq" || baseUrl.includes("groq.com");
 
+	// Groq's Qwen3 family that only accepts reasoning_effort="default" —
+	// the 32b and 3.6 models. Newer qwen3.x (3.5, 3.8…) take the real
+	// low/medium/high levels and must NOT be folded into this map.
+	const groqQwen3DefaultOnly = model.id === "qwen/qwen3-32b" || model.id.startsWith("qwen/qwen3.6");
 	const reasoningEffortMap =
-		isGroq && model.id.startsWith("qwen/qwen3")
+		isGroq && groqQwen3DefaultOnly
 			? {
 					minimal: "default",
 					low: "default",

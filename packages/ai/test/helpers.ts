@@ -16,13 +16,20 @@ type ProviderApi<TProvider extends KnownProvider> = ApiOfModel<(typeof MODELS)[T
  * Return a registered model for `provider`, resolved from the live catalog at
  * runtime so tests stay valid when the generated model union rotates.
  * Pass `filter` to pick a model with specific properties (reasoning, input, id...).
+ *
+ * Without a filter, prefer a current alias id over a dated `-YYYYMMDD`
+ * snapshot: the catalog has no `deprecated`/`eol` flag, but providers retire
+ * the dated snapshots first (e.g. `claude-3-5-haiku-20241022`) while the
+ * undated alias (`claude-haiku-4-5`, `gpt-5`) tracks the current release.
+ * Tests needing a specific capability must still pass a filter — the default
+ * only avoids the retired-snapshot trap, it does not pick a reasoning model.
  */
 export function testModel<TProvider extends KnownProvider>(
 	provider: TProvider,
 	filter?: (model: ProviderModel<TProvider>) => boolean,
 ): ProviderModel<TProvider> {
 	const models = getModels(provider) as ProviderModel<TProvider>[];
-	const model = filter ? models.find(filter) : models[0];
+	const model = filter ? models.find(filter) : (models.find((m) => !/-\d{8}$/.test(m.id)) ?? models[0]);
 	if (!model) {
 		throw new Error(`No model found for provider "${provider}"${filter ? " matching filter" : ""}`);
 	}
