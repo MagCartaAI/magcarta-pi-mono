@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { getModel, type Model } from "@mariozechner/pi-ai";
+import { getModel, getModels, type Model } from "@mariozechner/pi-ai";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -194,7 +194,7 @@ describe.skipIf(!HAS_ANTHROPIC_AUTH)("Compaction with thinking models (Anthropic
 	}
 
 	it("should compact successfully with claude-3-7-sonnet and thinking level high", async () => {
-		const model = getModel("anthropic", "claude-3-7-sonnet-latest")!;
+		const model = getModels("anthropic").find((m) => m.reasoning)!;
 		createSession(model, "high");
 
 		// Send a simple prompt
