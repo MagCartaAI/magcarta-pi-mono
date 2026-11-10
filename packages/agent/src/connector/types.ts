@@ -123,6 +123,9 @@ export interface LlmWireMessage {
 	readonly content: string;
 	readonly name?: string;
 	readonly tool_call_id?: string;
+	/** Assistant turns that call tools carry the OpenAI-compatible tool_calls
+	 * array the gateway forwards untouched to the upstream provider. */
+	readonly tool_calls?: ReadonlyArray<unknown>;
 }
 
 /**

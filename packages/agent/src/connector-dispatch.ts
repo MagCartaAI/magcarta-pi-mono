@@ -9,7 +9,7 @@
  * file stays focused on turn orchestration.
  */
 
-import type { AssistantMessage, EventStream, Message, TextContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage, EventStream, Message, TextContent, ToolCall } from "@mariozechner/pi-ai";
 import type { ConnectorLlmResult, LlmInvokeRequest, LlmWireMessage } from "./connector/types.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./types.js";
 
@@ -20,12 +20,11 @@ import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage } from "./
  * `TextContent.text` blocks and drops non-text blocks
  * (thinking/toolCall/image) — the text-only journey.
  *
- * `toolResult` folds into a `user` message labelled with the tool name. The
- * contract message schema has no `assistant.tool_calls`, so a `tool`-role
- * wire message would have no call to answer and the provider rejects it as
- * orphaned — but dropping the result means a `agentLoopContinue` turn loses
- * what the tool returned. Folding the result into `user` text preserves it
- * for the model without needing `tool_calls` on the wire.
+ * The contract message schema carries `tool_calls` on assistant turns and a
+ * `tool` role + `tool_call_id` on results, so the full OpenAI tool round-trip
+ * maps cleanly: assistant `toolCall` blocks become `tool_calls` (content is
+ * "" when the turn is calls-only), and `toolResult` becomes a `tool`-role
+ * message answering that call by id.
  */
 function flattenLlmMessage(message: Message): LlmWireMessage {
 	if (message.role === "toolResult") {
@@ -34,8 +33,10 @@ function flattenLlmMessage(message: Message): LlmWireMessage {
 			.map((block) => block.text)
 			.join("");
 		return {
-			role: "user",
-			content: `[tool result for ${message.toolName}]: ${text}`,
+			role: "tool",
+			content: text,
+			tool_call_id: message.toolCallId,
+			name: message.toolName,
 		};
 	}
 	if (typeof message.content === "string") {
@@ -45,7 +46,21 @@ function flattenLlmMessage(message: Message): LlmWireMessage {
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("");
-	return { role: message.role, content: text };
+	const toolCalls =
+		message.role === "assistant"
+			? message.content
+					.filter((block): block is ToolCall => block.type === "toolCall")
+					.map((block) => ({
+						id: block.id,
+						type: "function" as const,
+						function: { name: block.name, arguments: JSON.stringify(block.arguments ?? {}) },
+					}))
+			: [];
+	return {
+		role: message.role,
+		content: text,
+		...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+	};
 }
 
 function emptyConnectorUsage() {
