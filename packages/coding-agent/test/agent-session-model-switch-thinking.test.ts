@@ -1,5 +1,5 @@
 import { Agent, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import { getModel, getModels } from "@mariozechner/pi-ai";
+import { getModels } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import { AgentSession } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -8,7 +8,8 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { createTestResourceLoader } from "./utilities.js";
 
-const reasoningModel = getModel("anthropic", "claude-sonnet-4-5")!;
+// Resolve against the live catalog — the generated model union rotates ids.
+const reasoningModel = getModels("anthropic").find((m) => m.reasoning)!;
 const nonReasoningModel = getModels("anthropic").find((m) => !m.reasoning)!;
 
 function createSession({
