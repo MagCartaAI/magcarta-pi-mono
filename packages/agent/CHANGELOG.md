@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+- Removed the E1 governance surface from `AgentLoopConfig` (`governance`, `governanceContext`, `envelopeBuilder`) and the `governance_evaluate`/`governance_decision` stream events; the E1 `GovernanceProvider`/`ActionEnvelope`/`GatewayDecision`/`ActionEnvelopeBuilder` types and `DefaultActionEnvelopeBuilder` are no longer exported from `governance.ts`. The E2 connector surface (`GovernanceAuthorizer`, `ConnectorExecutor`, `MagCartaProvider`, `ConnectorAdrEvent`, `ClassificationMetadata`, `ClassificationResult`) is unchanged.
+
 ## [0.56.3] - 2026-03-06
 
 ## [0.56.2] - 2026-03-05
