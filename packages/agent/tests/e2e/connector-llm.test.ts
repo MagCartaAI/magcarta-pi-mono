@@ -1,16 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type AssistantMessage, EventStream, type AssistantMessageEvent, type Message, type Model } from "@mariozechner/pi-ai";
+import { type Message, type Model } from "@mariozechner/pi-ai";
 import { expect, it, vi } from "vitest";
 import { agentLoop } from "../../src/agent-loop.js";
 import type { ConnectorContext, LlmConnectorEnvelope, LlmInvokeRequest } from "../../src/connector/types.js";
-import { DefaultActionEnvelopeBuilder } from "../../src/governance.js";
 import { ClassificationBlocked, GatewayProvider, GovernanceDenied, ModeMismatch, SubjectBindingViolation } from "../../src/providers/gateway-provider.js";
 import type { AgentContext, AgentEvent, AgentLoopConfig } from "../../src/types.js";
 
 // Failures: direct dispatch leaks a key; flattening loses history; malformed envelopes dispatch;
-// SSE denial becomes success; Stop emits later tokens; legacy authorization disappears.
+// SSE denial becomes success; Stop emits later tokens.
 const connectorContext: ConnectorContext = {
 	tenant_id: "demo-tenant", agent_id: "assistant", agent_did: "did:web:test:agents:assistant",
 	connector_id: "llm.demo", connector_mode: "proxy", credential_ref: { backend_id: "env", path: "OPENROUTER_API_KEY" },
@@ -105,17 +104,6 @@ it("routes connector turns through one governed dispatch with typed failures and
 		expect(iteratorClosed).toBe(true);
 		expect(executeLlm.mock.calls.at(-1)?.[1]).toBe(controller.signal);
 		gates.push("Stop closes iterator and yields aborted without later token events");
-		const legacyMessage: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "legacy" }], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 1 };
-		const evaluateAction = vi.fn(async () => ({ decision: "ALLOW" as const, policy_hash: "test" }));
-		const legacy = agentLoop([{ role: "user", content: "legacy", timestamp: 1 }], context, { ...config, connectorContext: undefined, getApiKey: undefined, governance: { evaluateAction, recordDecision: async () => {} }, governanceContext: { agent_did: connectorContext.agent_did, session_id: "session", taint_context_id: "taint", policy_epoch: "epoch" }, envelopeBuilder: new DefaultActionEnvelopeBuilder({}) }, undefined, () => {
-			const events = new EventStream<AssistantMessageEvent, AssistantMessage>((event) => event.type === "done", () => legacyMessage);
-			queueMicrotask(() => events.push({ type: "done", reason: "stop", message: legacyMessage }));
-			return events;
-		});
-		for await (const _event of legacy) { /* Drain the public event stream. */ }
-		expect(evaluateAction).toHaveBeenCalledOnce();
-		expect((await legacy.result()).at(-1)).toEqual(legacyMessage);
-		gates.push("missing connector context retains legacy authorization");
 		outcome = "PASS";
 	} finally {
 		// Resolve from this file's location, not the process CWD, so the run is

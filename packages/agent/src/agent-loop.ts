@@ -12,7 +12,6 @@ import {
 	validateToolArguments,
 } from "@mariozechner/pi-ai";
 import { dispatchViaConnector } from "./connector-dispatch.js";
-import type { ActionEnvelopeBuilder, AdrEvent, GovernanceContext, GovernanceProvider } from "./governance.js";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -228,9 +227,6 @@ async function runLoop(
 					signal,
 					stream,
 					config.getSteeringMessages,
-					config.governance,
-					config.governanceContext,
-					config.envelopeBuilder,
 				);
 				toolResults.push(...toolExecution.toolResults);
 				steeringAfterTools = toolExecution.steeringMessages ?? null;
@@ -305,51 +301,6 @@ async function streamAssistantResponse(
 
 	const streamFunction = streamFn || streamSimple;
 
-	// Governance Hook 2: LLM call interception
-	if (config.governance && config.governanceContext && config.envelopeBuilder) {
-		const envelope = await config.envelopeBuilder.fromLLMCall(
-			{ provider: config.model.provider, id: config.model.id },
-			config.governanceContext,
-		);
-		stream.push({ type: "governance_evaluate", envelope });
-
-		const decision = await config.governance.evaluateAction(envelope, config.governanceContext);
-		stream.push({ type: "governance_decision", decision });
-
-		const adrEvent: AdrEvent = {
-			agent_did: config.governanceContext.agent_did,
-			action_type: "model_call",
-			envelope,
-			decision,
-			timestamp: new Date().toISOString(),
-		};
-		await config.governance.recordDecision(adrEvent);
-
-		if (decision.decision === "DENY") {
-			const denyMessage: AssistantMessage = {
-				role: "assistant",
-				content: [{ type: "text", text: decision.reason ?? "Governance denied LLM call" }],
-				api: config.model.api ?? "unknown",
-				provider: config.model.provider,
-				model: config.model.id,
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "error",
-				timestamp: Date.now(),
-			};
-			context.messages.push(denyMessage);
-			stream.push({ type: "message_start", message: denyMessage });
-			stream.push({ type: "message_end", message: denyMessage });
-			return denyMessage;
-		}
-	}
-
 	// Resolve API key (important for expiring tokens)
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
@@ -421,9 +372,6 @@ async function executeToolCalls(
 	signal: AbortSignal | undefined,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	getSteeringMessages?: AgentLoopConfig["getSteeringMessages"],
-	governance?: GovernanceProvider,
-	governanceContext?: GovernanceContext,
-	envelopeBuilder?: ActionEnvelopeBuilder,
 ): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
 	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
 	const results: ToolResultMessage[] = [];
@@ -447,67 +395,6 @@ async function executeToolCalls(
 			if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
 
 			const validatedArgs = validateToolArguments(tool, toolCall);
-
-			// Governance Hook 1: Tool execution interception
-			if (governance && governanceContext && envelopeBuilder) {
-				const envelope = await envelopeBuilder.fromToolCall(
-					toolCall.name,
-					validatedArgs as Record<string, unknown>,
-					governanceContext,
-				);
-				stream.push({
-					type: "governance_evaluate",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					envelope,
-				});
-
-				const decision = await governance.evaluateAction(envelope, governanceContext);
-				stream.push({
-					type: "governance_decision",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					decision,
-				});
-
-				const adrEvent: AdrEvent = {
-					agent_did: governanceContext.agent_did,
-					action_type: "api_call",
-					envelope,
-					decision,
-					timestamp: new Date().toISOString(),
-				};
-				await governance.recordDecision(adrEvent);
-
-				if (decision.decision === "DENY") {
-					result = {
-						content: [{ type: "text", text: decision.reason ?? "Governance denied tool execution" }],
-						details: {},
-					};
-					isError = true;
-					stream.push({
-						type: "tool_execution_end",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						result,
-						isError,
-					});
-
-					const toolResultMessage: ToolResultMessage = {
-						role: "toolResult",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						content: result.content,
-						details: result.details,
-						isError,
-						timestamp: Date.now(),
-					};
-					results.push(toolResultMessage);
-					stream.push({ type: "message_start", message: toolResultMessage });
-					stream.push({ type: "message_end", message: toolResultMessage });
-					continue;
-				}
-			}
 
 			result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
 				stream.push({

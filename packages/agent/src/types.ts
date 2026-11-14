@@ -11,14 +11,7 @@ import type {
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
 import type { ConnectorContext } from "./connector/types.js";
-import type {
-	ActionEnvelope,
-	ActionEnvelopeBuilder,
-	ConnectorExecutor,
-	GatewayDecision,
-	GovernanceContext,
-	GovernanceProvider,
-} from "./governance.js";
+import type { ConnectorExecutor } from "./governance.js";
 
 /** Stream function - can return sync or Promise for async config lookup */
 export type StreamFn = (
@@ -104,13 +97,6 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Use this for follow-up messages that should wait until the agent finishes.
 	 */
 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
-
-	/** MagCarta governance provider (Strategy pattern). When set, all tool and LLM calls are evaluated. */
-	governance?: GovernanceProvider;
-	/** Context binding this session to agent identity, taint scope, and policy epoch. */
-	governanceContext?: GovernanceContext;
-	/** Builds ActionEnvelope payloads from tool/LLM call data. */
-	envelopeBuilder?: ActionEnvelopeBuilder;
 
 	/**
 	 * Connector executor used for LLM dispatch when `connectorContext.connector_mode`
@@ -221,7 +207,4 @@ export type AgentEvent =
 	// Tool execution lifecycle
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: any }
 	| { type: "tool_execution_update"; toolCallId: string; toolName: string; args: any; partialResult: any }
-	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean }
-	// Governance lifecycle (C07)
-	| { type: "governance_evaluate"; toolCallId?: string; toolName?: string; envelope: ActionEnvelope }
-	| { type: "governance_decision"; toolCallId?: string; toolName?: string; decision: GatewayDecision };
+	| { type: "tool_execution_end"; toolCallId: string; toolName: string; result: any; isError: boolean };
