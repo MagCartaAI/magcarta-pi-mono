@@ -479,13 +479,16 @@ synthesis, steering-message skip) byte-for-byte — only the
 **Abort / cancellation.** The pinned `ConnectorExecutor` signatures take no
 `AbortSignal` for the envelope executors (`executeLlm` is the sole
 exception with `signal?`), so an abort cannot interrupt an in-flight
-gateway fetch through the interface. The loop SHALL honor the existing
-`executeToolCalls` cancellation convention unchanged: the abort check runs
-between sequential tool calls exactly as today, and a proxy-bound tool that
-has already dispatched its fetch completes its HTTP round-trip — the abort
-does not abort the wire call. No new signal plumbing is added; the
-sequential `for` loop keeps its current check-then-execute shape. This is
-documented, not changed.
+gateway fetch through the interface. `executeToolCalls` today carries no
+`signal.aborted` check between iterations — its only interruption is the
+steering-message skip — so this phase does not add per-call cancellation;
+that is a contract-honest gap, not a behavior to fake. A proxy-bound tool
+that has dispatched its fetch completes its HTTP round-trip and produces
+its tool result; the abort signal reaches the next queued tool only through
+the steering mechanism that already exists. No new signal plumbing is added
+to the pinned signatures; adding a between-call `signal.aborted` check is
+deferred to the phase that can change the interface, and is recorded here
+as a known limitation so the gap is explicit rather than silent.
 
 #### Scenario: proxy dispatch
 
@@ -509,14 +512,85 @@ documented, not changed.
 **THEN** the tool result is `isError` naming the missing prerequisite
 **AND** `tool.execute` is not invoked as a fallback.
 
+### Requirement: Gateway result → `AgentToolResult` adapter
+
+`connector-tool-dispatch.ts` SHALL own an adapter that converts the raw
+gateway result JSON returned by an `execute*` method into an
+`AgentToolResult`. The gateway routes return a per-connector execution
+result object (authoritative schemas:
+`magcarta-contracts/src/schemas/execution-result.ts` — `HttpExecutionResult`,
+`DbExecutionResult`, `FileReadResult`, `FileWriteResult`, `FileDeleteResult`).
+The adapter SHALL NOT re-serialize or reshape the result — it wraps it.
+
+The adapter SHALL validate the returned body against the mirrored result
+shape for `binding.connector_type` (mirroring the relevant
+`*ExecutionResult` variant inline, no contracts import). Validation covers
+each variant the connector can return: `db` accepts both `inline` (carries
+`rows`) and `opaque_handle` (carries `handle`); `file` read accepts `inline`
+/`opaque_handle`/`listing`/`metadata`. On a parse or validation failure it
+SHALL produce an `isError` tool result naming the action id and the
+validation failure — the gateway returned a malformed result, which is a
+contract violation, not a tool-level error.
+
+The mapped `AgentToolResult` SHALL carry:
+- `content`: a single text content block whose text is
+  `JSON.stringify(result)` — the full result object (rows / content /
+  handle / status_code / headers), preserving opaque handles and base64
+  file bytes verbatim so the model sees the structured payload.
+- `details`: the parsed result object as `details` — the typed result
+  carried for programmatic consumers (handle re-mint, classification).
+
+The adapter SHALL distinguish gateway-side execution failures encoded in
+the result shape from transport/governance errors: a 200 result whose
+schema validates is a successful tool result even when the embedded
+`status_code`/operation denotes an upstream failure (the model needs to see
+a 404-from-HTTP-tool as data, not as a thrown error). Governance/
+transport/classification failures thrown by the `execute*` method itself
+become `isError` via the branch requirement, not via this adapter.
+
+#### Scenario: inline db result
+
+**WHEN** `executeDb` resolves to a `DbExecutionResult` with
+`result_format:"inline"` and `rows`
+**THEN** the adapter returns a non-error `AgentToolResult` whose `content`
+text is the stringified result and whose `details` is the parsed object.
+
+#### Scenario: opaque handle preserved
+
+**WHEN** a `db` or `file` read result carries `result_format:"opaque_handle"`
+and a `handle` block
+**THEN** `details` and the stringified `content` carry the handle verbatim —
+no re-mint, no unwrap.
+
+#### Scenario: file-read variants
+
+**WHEN** a `file` read result is any of `inline` / `listing` / `metadata`
+**THEN** it validates and maps to a non-error `AgentToolResult` —
+each supported variant round-trips through the adapter.
+
+#### Scenario: malformed result
+
+**WHEN** an `execute*` method resolves to a body that fails the mirrored
+result schema
+**THEN** the adapter returns an `isError` tool result naming the action id
+and the schema failure.
+
+#### Scenario: upstream failure is data
+
+**WHEN** `executeHttp` resolves to a valid `HttpExecutionResult` whose
+`status_code` is 404
+**THEN** the adapter returns a non-error `AgentToolResult` carrying the 404
+result — not a thrown error.
+
 #### Scenario: abort between calls
 
 **WHEN** `executeToolCalls` processes a queued list and the abort signal
 fires while a proxy-bound tool's fetch is in flight
 **THEN** that call completes its HTTP round-trip and produces its tool
-result
-**AND** the next queued call is skipped by the existing between-iteration
-abort check — no fetch is aborted mid-flight and no new signal is added.
+result — the wire call is not aborted mid-flight and no new signal is added
+**AND** the next queued call is skipped only by the existing
+steering-message mechanism, not by a `signal.aborted` check (none exists
+between iterations today).
 
 ### Requirement: Test coverage
 
