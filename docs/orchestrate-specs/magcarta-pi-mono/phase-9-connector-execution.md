@@ -523,14 +523,24 @@ result object (authoritative schemas:
 The adapter SHALL NOT re-serialize or reshape the result — it wraps it.
 
 The adapter SHALL validate the returned body against the mirrored result
-shape for `binding.connector_type` (mirroring the relevant
-`*ExecutionResult` variant inline, no contracts import). Validation covers
-each variant the connector can return: `db` accepts both `inline` (carries
-`rows`) and `opaque_handle` (carries `handle`); `file` read accepts `inline`
-/`opaque_handle`/`listing`/`metadata`. On a parse or validation failure it
-SHALL produce an `isError` tool result naming the action id and the
-validation failure — the gateway returned a malformed result, which is a
-contract violation, not a tool-level error.
+shape selected by `binding.connector_type` **and** the dispatched
+`action_id` — `file` read/write/delete share `connector_type:"file"` but
+have distinct result schemas, so a `FileWriteResult` returned from
+`executeFileRead` is a malformed result, not a valid one. (Mirroring the
+relevant `*ExecutionResult` variant inline, no contracts import.)
+Validation covers each variant the dispatched action can return: `db`
+accepts both `inline` (carries `rows`) and `opaque_handle` (carries
+`handle`); `file` read accepts `inline`/`opaque_handle`/`listing`/
+`metadata`.
+
+`AgentToolResult` has no `isError` field — the `isError` flag is set by the
+`executeToolCalls` catch block on the emitted event and the
+`ToolResultMessage`. On a parse or validation failure the adapter SHALL
+therefore **throw** an error naming the action id and the validation
+failure; the preserved loop catch then produces the `isError` tool result
+and marks both the event and the message `isError:true`. A malformed
+result is a contract violation, not a tool-level error, so it must surface
+as `isError`, never as a silent success.
 
 The mapped `AgentToolResult` SHALL carry:
 - `content`: a single text content block whose text is
@@ -571,9 +581,10 @@ each supported variant round-trips through the adapter.
 #### Scenario: malformed result
 
 **WHEN** an `execute*` method resolves to a body that fails the mirrored
-result schema
-**THEN** the adapter returns an `isError` tool result naming the action id
-and the schema failure.
+result schema — including a result valid for a different file action —
+**THEN** the adapter throws naming the action id and the schema failure
+**AND** the loop catch produces an `isError` tool result (event and
+`ToolResultMessage` both `isError:true`).
 
 #### Scenario: upstream failure is data
 
@@ -610,7 +621,8 @@ rows:
 - `test/agent-loop-tool-mode.test.ts`: proxy mints + dispatches with the
   result→`AgentToolResult` adapter (content stringify + details carry),
   approval / unregistered local, missing provider → `isError`, missing
-  context → `isError`, malformed-result → `isError`, and a valid-result /
+  context → `isError`, malformed-result (incl. a result valid for a
+  different file action) → `isError` via adapter throw, and a valid-result /
   upstream-failure (e.g. http 404) → non-error.
 - `test/providers/gateway-provider-executors.test.ts` (or the mode file):
   `executeBrowser` deny mapping (403 `policy` → `GovernanceDenied`) and 2xx
