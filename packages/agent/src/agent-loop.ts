@@ -9,18 +9,10 @@ import {
 	EventStream,
 	streamSimple,
 	type ToolResultMessage,
-	validateToolArguments,
 } from "@mariozechner/pi-ai";
 import { dispatchViaConnector } from "./connector-dispatch.js";
-import type {
-	AgentContext,
-	AgentEvent,
-	AgentLoopConfig,
-	AgentMessage,
-	AgentTool,
-	AgentToolResult,
-	StreamFn,
-} from "./types.js";
+import { executeToolCalls } from "./connector-tool-dispatch.js";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, StreamFn } from "./types.js";
 
 /**
  * Start an agent loop with a new prompt message.
@@ -221,13 +213,7 @@ async function runLoop(
 
 			const toolResults: ToolResultMessage[] = [];
 			if (hasMoreToolCalls) {
-				const toolExecution = await executeToolCalls(
-					currentContext.tools,
-					message,
-					signal,
-					stream,
-					config.getSteeringMessages,
-				);
+				const toolExecution = await executeToolCalls(currentContext.tools, message, signal, stream, config);
 				toolResults.push(...toolExecution.toolResults);
 				steeringAfterTools = toolExecution.steeringMessages ?? null;
 
@@ -361,132 +347,4 @@ async function streamAssistantResponse(
 	}
 
 	return await response.result();
-}
-
-/**
- * Execute tool calls from an assistant message.
- */
-async function executeToolCalls(
-	tools: AgentTool<any>[] | undefined,
-	assistantMessage: AssistantMessage,
-	signal: AbortSignal | undefined,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
-	getSteeringMessages?: AgentLoopConfig["getSteeringMessages"],
-): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
-	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
-	const results: ToolResultMessage[] = [];
-	let steeringMessages: AgentMessage[] | undefined;
-
-	for (let index = 0; index < toolCalls.length; index++) {
-		const toolCall = toolCalls[index];
-		const tool = tools?.find((t) => t.name === toolCall.name);
-
-		stream.push({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		});
-
-		let result: AgentToolResult<any>;
-		let isError = false;
-
-		try {
-			if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
-
-			const validatedArgs = validateToolArguments(tool, toolCall);
-
-			result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
-				stream.push({
-					type: "tool_execution_update",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: toolCall.arguments,
-					partialResult,
-				});
-			});
-		} catch (e) {
-			result = {
-				content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-				details: {},
-			};
-			isError = true;
-		}
-
-		stream.push({
-			type: "tool_execution_end",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			result,
-			isError,
-		});
-
-		const toolResultMessage: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: result.content,
-			details: result.details,
-			isError,
-			timestamp: Date.now(),
-		};
-
-		results.push(toolResultMessage);
-		stream.push({ type: "message_start", message: toolResultMessage });
-		stream.push({ type: "message_end", message: toolResultMessage });
-
-		// Check for steering messages - skip remaining tools if user interrupted
-		if (getSteeringMessages) {
-			const steering = await getSteeringMessages();
-			if (steering.length > 0) {
-				steeringMessages = steering;
-				const remainingCalls = toolCalls.slice(index + 1);
-				for (const skipped of remainingCalls) {
-					results.push(skipToolCall(skipped, stream));
-				}
-				break;
-			}
-		}
-	}
-
-	return { toolResults: results, steeringMessages };
-}
-
-function skipToolCall(
-	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
-	stream: EventStream<AgentEvent, AgentMessage[]>,
-): ToolResultMessage {
-	const result: AgentToolResult<any> = {
-		content: [{ type: "text", text: "Skipped due to queued user message." }],
-		details: {},
-	};
-
-	stream.push({
-		type: "tool_execution_start",
-		toolCallId: toolCall.id,
-		toolName: toolCall.name,
-		args: toolCall.arguments,
-	});
-	stream.push({
-		type: "tool_execution_end",
-		toolCallId: toolCall.id,
-		toolName: toolCall.name,
-		result,
-		isError: true,
-	});
-
-	const toolResultMessage: ToolResultMessage = {
-		role: "toolResult",
-		toolCallId: toolCall.id,
-		toolName: toolCall.name,
-		content: result.content,
-		details: {},
-		isError: true,
-		timestamp: Date.now(),
-	};
-
-	stream.push({ type: "message_start", message: toolResultMessage });
-	stream.push({ type: "message_end", message: toolResultMessage });
-
-	return toolResultMessage;
 }

@@ -10,6 +10,7 @@ import type {
 	ToolResultMessage,
 } from "@mariozechner/pi-ai";
 import type { Static, TSchema } from "@sinclair/typebox";
+import type { ToolRegistry } from "./connector/tool-registry.js";
 import type { ConnectorContext } from "./connector/types.js";
 import type { ConnectorExecutor } from "./governance.js";
 
@@ -111,6 +112,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * `LlmConnectorEnvelope`. Absent (or non-proxy mode) keeps legacy dispatch.
 	 */
 	connectorContext?: ConnectorContext;
+	toolRegistry?: ToolRegistry;
 }
 
 /**

@@ -377,7 +377,11 @@ async function* streamLlmTokenChunks(
  * integrity, not a policy verdict), then the 4xx category branches, then a
  * generic `GatewayUnavailable` for everything else. Always throws.
  */
-async function raiseConnectorError(response: GatewayResponse, gatewayUrl: string, actionId: string): Promise<never> {
+export async function raiseConnectorError(
+	response: GatewayResponse,
+	gatewayUrl: string,
+	actionId: string,
+): Promise<never> {
 	let body: unknown;
 	try {
 		body = await response.json();
