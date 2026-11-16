@@ -6,15 +6,9 @@ import {
 } from "@mariozechner/pi-ai";
 import { expect, it, vi } from "vitest";
 import { agentLoop } from "../../src/agent-loop.js";
-import {
-	type ConnectorContext,
-	type ConnectorEnvelope,
-	type ConnectorMode,
-	type LlmConnectorEnvelope,
-	NotImplementedError,
-} from "../../src/connector/types.js";
+import type { ConnectorContext, ConnectorEnvelope, ConnectorMode } from "../../src/connector/types.js";
 import * as connectorDispatch from "../../src/connector-dispatch.js";
-import { type FetchLike, GatewayProvider } from "../../src/providers/gateway-provider.js";
+import { type FetchLike, GatewayProvider, GovernanceDenied } from "../../src/providers/gateway-provider.js";
 import type { AgentLoopConfig, StreamFn } from "../../src/types.js";
 
 const connectorContext: ConnectorContext = {
@@ -122,9 +116,12 @@ it("keeps connector execution exclusive to proxy mode and browser execution disa
 		for (const row of modeCases) {
 			dispatchViaConnector.mockClear();
 			const context = row.mode ? { ...connectorContext, connector_mode: row.mode } : undefined;
-			const envelopes: LlmConnectorEnvelope[] = [];
+			const envelopes: ConnectorEnvelope[] = [];
 			const fetchGateway = vi.fn<FetchLike>(async (_url, init) => {
 				envelopes.push(JSON.parse(init?.body ?? "null"));
+				if (row.operation === "browser") {
+					return new Response(JSON.stringify({ error: { category: "policy" } }), { status: 403 });
+				}
 				return new Response('data: {"choices":[{"delta":{"content":"gateway answer"}}]}\n\ndata: [DONE]\n\n');
 			});
 			const tokenProvider = vi.fn(() => "gateway-token");
@@ -162,7 +159,6 @@ it("keeps connector execution exclusive to proxy mode and browser execution disa
 				return response;
 			});
 			if (row.operation === "browser") {
-				// The public envelope union has no browser variant; rejection must be unconditional.
 				const envelope = {
 					...connectorContext,
 					connector_mode: row.mode!,
@@ -173,7 +169,7 @@ it("keeps connector execution exclusive to proxy mode and browser execution disa
 					action_id: "connector::browser::navigate",
 					request: { url: "https://example.test" },
 				} as unknown as ConnectorEnvelope;
-				await expect(provider.executeBrowser(envelope), row.name).rejects.toBeInstanceOf(NotImplementedError);
+				await expect(provider.executeBrowser(envelope), row.name).rejects.toBeInstanceOf(GovernanceDenied);
 			} else {
 				const config: AgentLoopConfig = {
 					model,
@@ -222,6 +218,15 @@ it("keeps connector execution exclusive to proxy mode and browser execution disa
 						],
 					},
 				});
+			} else if (row.operation === "browser") {
+				expect(dispatchViaConnector, row.name).not.toHaveBeenCalled();
+				expect(executeLlm, row.name).not.toHaveBeenCalled();
+				expect(fetchGateway, row.name).toHaveBeenCalledExactlyOnceWith(
+					"https://gateway.test/api/connector/browser/navigate",
+					expect.objectContaining({ method: "POST", body: JSON.stringify(envelopes[0]) }),
+				);
+				expect(tokenProvider, row.name).toHaveBeenCalledTimes(1);
+				expect(envelopes, row.name).toHaveLength(1);
 			} else {
 				expect(dispatchViaConnector, row.name).not.toHaveBeenCalled();
 				expect(executeLlm, row.name).not.toHaveBeenCalled();

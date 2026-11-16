@@ -1,15 +1,4 @@
-/**
- * MagCarta C09 Tool Access Plane types — Phase 1 thin slice (WE2-007).
- *
- * These types mirror `@magcarta/contracts` schemas by structure but are defined
- * inline in this package. pi-mono publishes as a standalone package and does
- * not depend on @magcarta/contracts directly; keeping the shapes local preserves
- * the publish boundary while still matching the contract. Any divergence must
- * be reconciled here when contracts change.
- *
- * Phase 2+ broadens the envelope union to DB/File/LLM/Browser; Phase 1 ships
- * the HTTP discriminant only to validate the end-to-end architecture.
- */
+// Wire shapes mirror the contracts inline to preserve the standalone publish boundary.
 
 // --- Enumerations ---
 
@@ -110,6 +99,74 @@ export interface HttpConnectorEnvelope extends BaseConnectorEnvelope {
 	readonly request: HttpConnectorRequest;
 }
 
+export interface DbConnectorRequest {
+	readonly connection_ref: string;
+	readonly sql_text: string;
+	readonly parameters?: unknown[];
+	readonly row_limit?: number;
+	readonly result_format?: "inline" | "opaque_handle" | "auto";
+	readonly read_replica_ok?: boolean;
+}
+
+export interface DbConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "db";
+	readonly action_id: "connector::db::query" | "connector::db::mutate";
+	readonly request: DbConnectorRequest;
+}
+
+export interface FileReadConnectorRequest {
+	readonly connection_ref: string;
+	readonly key: string;
+	readonly operation: "get" | "head" | "list";
+	readonly range?: { readonly start_byte: number; readonly end_byte: number };
+	readonly result_format?: "inline" | "opaque_handle" | "auto";
+}
+
+export interface FileReadConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "file";
+	readonly action_id: "connector::file::read";
+	readonly request: FileReadConnectorRequest;
+}
+
+export interface FileWriteConnectorRequest {
+	readonly connection_ref: string;
+	readonly destination: {
+		readonly key: string;
+		readonly content_type: string;
+		readonly storage_class?: string;
+		readonly metadata?: Readonly<Record<string, string>>;
+	};
+	readonly from_handle?: string;
+	readonly inline_content?: string;
+}
+
+export interface FileWriteConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "file";
+	readonly action_id: "connector::file::write";
+	readonly request: FileWriteConnectorRequest;
+}
+
+export interface FileDeleteConnectorRequest {
+	readonly connection_ref: string;
+	readonly key: string;
+}
+
+export interface FileDeleteConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "file";
+	readonly action_id: "connector::file::delete";
+	readonly request: FileDeleteConnectorRequest;
+}
+
+export interface BrowserConnectorRequest {
+	readonly url: string;
+}
+
+export interface BrowserConnectorEnvelope extends BaseConnectorEnvelope {
+	readonly connector_type: "browser";
+	readonly action_id: "connector::browser::navigate";
+	readonly request: BrowserConnectorRequest;
+}
+
 // --- LLM connector shapes ---
 
 /**
@@ -194,11 +251,15 @@ export interface ConnectorContext {
 	readonly credential_ref?: CredentialRef;
 }
 
-/**
- * The ConnectorEnvelope union. Currently HTTP is wired for `authorize()`;
- * the LLM variant is wired for proxy-mode `executeLlm` (WE2 Phase 8).
- */
-export type ConnectorEnvelope = HttpConnectorEnvelope | LlmConnectorEnvelope;
+// File variants share connector_type and narrow further on action_id.
+export type ConnectorEnvelope =
+	| HttpConnectorEnvelope
+	| DbConnectorEnvelope
+	| FileReadConnectorEnvelope
+	| FileWriteConnectorEnvelope
+	| FileDeleteConnectorEnvelope
+	| LlmConnectorEnvelope
+	| BrowserConnectorEnvelope;
 
 // --- Authorization decision ---
 

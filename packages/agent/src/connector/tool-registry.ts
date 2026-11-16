@@ -17,7 +17,7 @@
  * hard-to-debug misrouting during Phase 9 demo tool wiring.
  */
 
-import type { ConnectorActionId, ConnectorMode, ConnectorType } from "./types.js";
+import type { ConnectorActionId, ConnectorMode, ConnectorType, CredentialRef } from "./types.js";
 
 export interface ConnectorToolBinding {
 	readonly name: string;
@@ -25,6 +25,7 @@ export interface ConnectorToolBinding {
 	readonly connector_type: ConnectorType;
 	readonly default_action: ConnectorActionId;
 	readonly default_mode: ConnectorMode;
+	readonly credential_ref?: CredentialRef;
 }
 
 export interface ToolRegistryRegisterOptions {

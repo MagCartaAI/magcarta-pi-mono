@@ -1,18 +1,5 @@
-/**
- * GatewayProvider — default MagCarta governance provider that talks to the
- * gateway service via HTTP (WE2-007).
- *
- * Phase 1 thin slice implements only `authorize()`. The remaining methods on
- * the `MagCartaProvider` combined interface throw `NotImplementedError`:
- *
- * - `classify()` — wired in Phase 3 (WE2-014)
- * - `recordDecision()` — wired in Phase 3 (WE2-014)
- * - `executeHttp()` and the other `ConnectorExecutor` methods — wired in
- *   Phase 9 (WE2-036)
- *
- * The provider is stateless aside from a pluggable fetch function and an
- * auth token provider callback. Tests inject both as doubles.
- */
+// Gateway authorization and connector execution share injectable transport and auth.
+// Classification and decision recording remain deferred.
 
 import {
 	type AuthorizationDecision,
@@ -29,7 +16,7 @@ import type {
 	ConnectorAdrEvent,
 	MagCartaProvider,
 } from "../governance.js";
-import { executeLlmInvoke } from "./gateway-llm.js";
+import { executeLlmInvoke, GatewayUnavailable, raiseConnectorError } from "./gateway-llm.js";
 
 export {
 	ClassificationBlocked,
@@ -76,12 +63,6 @@ export interface GatewayProviderConfig {
 	readonly fetch?: FetchLike;
 }
 
-/**
- * HTTP-backed MagCarta governance provider. Phase 1 implements only
- * `authorize()`; the remaining methods on `MagCartaProvider` throw
- * `NotImplementedError` until Phase 3 (classify + recordDecision) and
- * Phase 9 (execute*).
- */
 export class GatewayProvider implements MagCartaProvider {
 	private readonly gatewayUrl: string;
 	private readonly tokenProvider: () => Promise<string> | string;
@@ -197,26 +178,26 @@ export class GatewayProvider implements MagCartaProvider {
 		throw new NotImplementedError("GatewayProvider.recordDecision", "Phase 1");
 	}
 
-	// --- ConnectorExecutor (all stubs in Phase 1) ------------------------------
+	// --- ConnectorExecutor ----------------------------------------------------
 
-	async executeHttp(_envelope: HttpConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeHttp", "Phase 1");
+	async executeHttp(envelope: HttpConnectorEnvelope): Promise<unknown> {
+		return this.executeEnvelope(envelope, "/api/connector/http/execute");
 	}
 
-	async executeDb(_envelope: ConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeDb", "Phase 1");
+	async executeDb(envelope: ConnectorEnvelope): Promise<unknown> {
+		return this.executeEnvelope(envelope, "/api/connector/db/execute");
 	}
 
-	async executeFileRead(_envelope: ConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeFileRead", "Phase 1");
+	async executeFileRead(envelope: ConnectorEnvelope): Promise<unknown> {
+		return this.executeEnvelope(envelope, "/api/connector/file/read");
 	}
 
-	async executeFileWrite(_envelope: ConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeFileWrite", "Phase 1");
+	async executeFileWrite(envelope: ConnectorEnvelope): Promise<unknown> {
+		return this.executeEnvelope(envelope, "/api/connector/file/write");
 	}
 
-	async executeFileDelete(_envelope: ConnectorEnvelope): Promise<unknown> {
-		throw new NotImplementedError("GatewayProvider.executeFileDelete", "Phase 1");
+	async executeFileDelete(envelope: ConnectorEnvelope): Promise<unknown> {
+		return this.executeEnvelope(envelope, "/api/connector/file/delete");
 	}
 
 	/**
@@ -246,11 +227,62 @@ export class GatewayProvider implements MagCartaProvider {
 		);
 	}
 
-	async executeBrowser(_envelope: ConnectorEnvelope): Promise<never> {
-		throw new NotImplementedError(
-			"GatewayProvider.executeBrowser",
-			"browser connector is out of scope for E2 (E2-Q2)",
+	async executeBrowser(envelope: ConnectorEnvelope): Promise<never> {
+		const route = "/api/connector/browser/navigate";
+		await this.postEnvelope(envelope, route);
+		const error = new GatewayUnavailable(
+			`${this.gatewayUrl}${route}`,
+			new Error("Browser navigation unexpectedly succeeded despite the gateway forbid policy"),
 		);
+		error.message += ` for ${envelope.action_id}: browser navigation must never succeed`;
+		throw error;
+	}
+
+	private async executeEnvelope(envelope: ConnectorEnvelope, route: string): Promise<unknown> {
+		const response = await this.postEnvelope(envelope, route);
+		try {
+			return await response.json();
+		} catch (err) {
+			const error = new GatewayUnavailable(
+				`${this.gatewayUrl}${route}`,
+				err instanceof Error ? err : new Error(String(err)),
+			);
+			error.message += ` for ${envelope.action_id}: success body is not valid JSON`;
+			throw error;
+		}
+	}
+
+	private async postEnvelope(envelope: ConnectorEnvelope, route: string): Promise<GatewayResponse> {
+		let token: string;
+		try {
+			token = await this.tokenProvider();
+		} catch (err) {
+			throw new GatewayProviderError(
+				"TOKEN_PROVIDER_FAILED",
+				`Token provider threw before ${envelope.action_id} could call gateway: ${errorMessage(err)}`,
+				0,
+				{ cause: err },
+			);
+		}
+		let response: GatewayResponse;
+		try {
+			response = await this.fetchImpl(`${this.gatewayUrl}${route}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+				body: JSON.stringify(envelope),
+			});
+		} catch (err) {
+			throw new GatewayProviderError(
+				"TRANSPORT_ERROR",
+				`Gateway request failed before a response was received: ${errorMessage(err)}`,
+				0,
+				{ cause: err },
+			);
+		}
+		if (!response.ok) {
+			await raiseConnectorError(response, this.gatewayUrl, envelope.action_id);
+		}
+		return response;
 	}
 }
 

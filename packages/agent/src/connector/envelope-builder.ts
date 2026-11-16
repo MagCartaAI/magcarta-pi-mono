@@ -1,14 +1,13 @@
-/**
- * ConnectorEnvelopeBuilder — constructs ConnectorEnvelope instances from
- * agent tool calls (WE2-007).
- *
- * Phase 1 thin slice handles HTTP only. Phase 2 (WE2-009) broadens to
- * DB/File/LLM/Browser; the build() method signature stays stable because
- * the discriminated union narrows on connector_type downstream.
- */
+// Tool envelopes are minted here; LLM requests retain their provider-owned minter.
 
 import type { ToolRegistry } from "./tool-registry.js";
-import type { HttpConnectorEnvelope, HttpConnectorRequest } from "./types.js";
+import type {
+	ConnectorEnvelope,
+	DbConnectorRequest,
+	FileReadConnectorRequest,
+	FileWriteConnectorRequest,
+	HttpConnectorRequest,
+} from "./types.js";
 
 export interface BuildEnvelopeInput {
 	readonly tool_name: string;
@@ -21,12 +20,7 @@ export interface BuildEnvelopeInput {
 export class ConnectorEnvelopeBuilder {
 	constructor(private readonly registry: ToolRegistry) {}
 
-	/**
-	 * Build a ConnectorEnvelope for a given tool invocation. In Phase 1, only
-	 * HTTP connector tools are supported — looking up a non-HTTP tool throws.
-	 * Phase 2 adds DB/File/LLM/Browser paths.
-	 */
-	build(input: BuildEnvelopeInput): HttpConnectorEnvelope {
+	build(input: BuildEnvelopeInput): ConnectorEnvelope {
 		const binding = this.registry.lookup(input.tool_name);
 		if (!binding) {
 			throw new Error(
@@ -35,31 +29,79 @@ export class ConnectorEnvelopeBuilder {
 			);
 		}
 
-		if (binding.connector_type !== "http") {
-			throw new Error(
-				`ConnectorEnvelopeBuilder: Phase 1 supports only HTTP connectors; tool ` +
-					`"${input.tool_name}" is bound to connector_type=${binding.connector_type}. ` +
-					"Wait for Phase 2 (WE2-009) to broaden the envelope builder.",
-			);
-		}
-
-		const request = this.extractHttpRequest(input.params);
-		const attemptId = generateAttemptId();
-		const now = new Date().toISOString();
-
-		return {
-			schema_version: "0.6.0",
-			attempt_id: attemptId,
+		const base = {
+			schema_version: "0.6.0" as const,
+			attempt_id: generateAttemptId(),
 			tenant_id: input.tenant_id,
 			agent_id: input.agent_id,
 			agent_did: input.agent_did,
 			connector_id: binding.connector_id,
-			connector_type: "http",
 			connector_mode: binding.default_mode,
-			action_id: this.narrowHttpAction(binding.default_action),
-			action_timestamp: now,
-			request,
+			action_timestamp: new Date().toISOString(),
 		};
+		const action = binding.default_action;
+		const params = input.params;
+		switch (binding.connector_type) {
+			case "http":
+			case "browser": {
+				const credential = binding.default_mode === "proxy" ? binding.credential_ref : undefined;
+				if (binding.default_mode === "proxy" && credential === undefined) {
+					throw new Error("MALFORMED_ENVELOPE: credential_ref is required for proxy http/browser connectors");
+				}
+				const envelope = { ...base, ...(credential !== undefined ? { credential_ref: credential } : {}) };
+				if (binding.connector_type === "http") {
+					return {
+						...envelope,
+						connector_type: "http",
+						action_id: this.narrowHttpAction(action),
+						request: this.extractHttpRequest(params),
+					};
+				}
+				if (action !== "connector::browser::navigate") break;
+				return {
+					...envelope,
+					connector_type: "browser",
+					action_id: action,
+					request: { url: extractUrl(params.url) },
+				};
+			}
+			case "db":
+				if (action !== "connector::db::query" && action !== "connector::db::mutate") break;
+				return { ...base, connector_type: "db", action_id: action, request: extractDbRequest(params) };
+			case "file":
+				switch (action) {
+					case "connector::file::read":
+						return {
+							...base,
+							connector_type: "file",
+							action_id: action,
+							request: extractFileReadRequest(params),
+						};
+					case "connector::file::write":
+						return {
+							...base,
+							connector_type: "file",
+							action_id: action,
+							request: extractFileWriteRequest(params),
+						};
+					case "connector::file::delete":
+						return {
+							...base,
+							connector_type: "file",
+							action_id: action,
+							request: {
+								connection_ref: extractString(params.connection_ref, "connection_ref"),
+								key: extractString(params.key, "key"),
+							},
+						};
+				}
+				break;
+			case "llm":
+				throw new Error("ConnectorEnvelopeBuilder: llm envelopes are minted by executeLlm, not tool calls");
+		}
+		throw new Error(
+			`ConnectorEnvelopeBuilder: action ${action} is inconsistent with connector_type=${binding.connector_type}`,
+		);
 	}
 
 	private narrowHttpAction(action: string): "connector::http::fetch" | "connector::http::submit" {
@@ -73,7 +115,7 @@ export class ConnectorEnvelopeBuilder {
 	}
 
 	private extractHttpRequest(params: Record<string, unknown>): HttpConnectorRequest {
-		const url = typeof params.url === "string" ? params.url : undefined;
+		const url = extractUrl(params.url);
 		const method = typeof params.method === "string" ? params.method : "GET";
 		if (!url) {
 			throw new Error("ConnectorEnvelopeBuilder: HTTP tool call must include params.url (string)");
@@ -104,6 +146,127 @@ export class ConnectorEnvelopeBuilder {
 		};
 		return request;
 	}
+}
+
+function extractString(value: unknown, field: string, allowEmpty = false): string {
+	if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
+		throw new Error(
+			`ConnectorEnvelopeBuilder: params.${field} must be ${allowEmpty ? "a string" : "a non-empty string"}`,
+		);
+	}
+	return value;
+}
+
+function extractUrl(value: unknown): string {
+	const url = extractString(value, "url");
+	try {
+		new URL(url);
+	} catch {
+		throw new Error("ConnectorEnvelopeBuilder: params.url must be a valid URL");
+	}
+	return url;
+}
+
+function extractObject(value: unknown, field: string): Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(`ConnectorEnvelopeBuilder: params.${field} must be an object`);
+	}
+	return value as Record<string, unknown>;
+}
+
+function extractResultFormat(value: unknown): "inline" | "opaque_handle" | "auto" {
+	if (value === undefined) return "auto";
+	if (value !== "inline" && value !== "opaque_handle" && value !== "auto") {
+		throw new Error("ConnectorEnvelopeBuilder: params.result_format must be inline, opaque_handle, or auto");
+	}
+	return value;
+}
+
+function extractInteger(value: unknown, field: string, minimum: number): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+		throw new Error(`ConnectorEnvelopeBuilder: params.${field} must be an integer >= ${minimum}`);
+	}
+	return value;
+}
+
+function extractDbRequest(params: Record<string, unknown>): DbConnectorRequest {
+	const connectionRef = extractString(params.connection_ref, "connection_ref");
+	const sqlText = extractString(params.sql_text, "sql_text");
+	if (params.parameters !== undefined && !Array.isArray(params.parameters)) {
+		throw new Error("ConnectorEnvelopeBuilder: params.parameters must be an array");
+	}
+	if (params.read_replica_ok !== undefined && typeof params.read_replica_ok !== "boolean") {
+		throw new Error("ConnectorEnvelopeBuilder: params.read_replica_ok must be a boolean");
+	}
+	return {
+		connection_ref: connectionRef,
+		sql_text: sqlText,
+		...(params.parameters !== undefined ? { parameters: params.parameters } : {}),
+		...(params.row_limit !== undefined ? { row_limit: extractInteger(params.row_limit, "row_limit", 1) } : {}),
+		result_format: extractResultFormat(params.result_format),
+		read_replica_ok: params.read_replica_ok ?? false,
+	};
+}
+
+function extractFileReadRequest(params: Record<string, unknown>): FileReadConnectorRequest {
+	const connectionRef = extractString(params.connection_ref, "connection_ref");
+	const operation = params.operation;
+	if (operation !== "get" && operation !== "head" && operation !== "list") {
+		throw new Error("ConnectorEnvelopeBuilder: params.operation must be get, head, or list");
+	}
+	const key = extractString(params.key === undefined ? "" : params.key, "key", operation === "list");
+	let range: FileReadConnectorRequest["range"];
+	if (params.range !== undefined) {
+		const inputRange = extractObject(params.range, "range");
+		const startByte = extractInteger(inputRange.start_byte, "range.start_byte", 0);
+		const endByte = extractInteger(inputRange.end_byte, "range.end_byte", 0);
+		if (startByte > endByte) {
+			throw new Error("ConnectorEnvelopeBuilder: params.range.start_byte must not exceed range.end_byte");
+		}
+		range = { start_byte: startByte, end_byte: endByte };
+	}
+	return {
+		connection_ref: connectionRef,
+		key,
+		operation,
+		...(range !== undefined ? { range } : {}),
+		result_format: extractResultFormat(params.result_format),
+	};
+}
+
+function extractFileWriteRequest(params: Record<string, unknown>): FileWriteConnectorRequest {
+	const connectionRef = extractString(params.connection_ref, "connection_ref");
+	const destination = extractObject(params.destination, "destination");
+	const key = extractString(destination.key, "destination.key");
+	const contentType = extractString(destination.content_type, "destination.content_type");
+	const storageClass =
+		destination.storage_class === undefined
+			? undefined
+			: extractString(destination.storage_class, "destination.storage_class", true);
+	const metadata = extractStringRecord(destination.metadata, "params.destination.metadata");
+	if ((params.from_handle !== undefined) === (params.inline_content !== undefined)) {
+		throw new Error("ConnectorEnvelopeBuilder: Exactly one of from_handle or inline_content must be provided (XOR)");
+	}
+	const fromHandle = params.from_handle === undefined ? undefined : extractString(params.from_handle, "from_handle");
+	if (
+		fromHandle !== undefined &&
+		!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fromHandle)
+	) {
+		throw new Error("ConnectorEnvelopeBuilder: params.from_handle must be a UUID");
+	}
+	const inlineContent =
+		params.inline_content === undefined ? undefined : extractString(params.inline_content, "inline_content", true);
+	return {
+		connection_ref: connectionRef,
+		destination: {
+			key,
+			content_type: contentType,
+			...(storageClass !== undefined ? { storage_class: storageClass } : {}),
+			...(metadata !== undefined ? { metadata } : {}),
+		},
+		...(fromHandle !== undefined ? { from_handle: fromHandle } : {}),
+		...(inlineContent !== undefined ? { inline_content: inlineContent } : {}),
+	};
 }
 
 /**

@@ -43,6 +43,7 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 		expect(envelope.agent_did).toBe("did:web:test:agents:agent-123");
 		expect(envelope.schema_version).toBe("0.6.0");
 		expect(envelope.attempt_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		if (envelope.connector_type !== "http") throw new Error("Expected HTTP envelope");
 		expect(envelope.request.url).toBe("https://api.example.com/search?q=test");
 		expect(envelope.request.method).toBe("GET");
 	});
@@ -57,6 +58,7 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 			agent_id: "a",
 			agent_did: "did:web:t:agents:a",
 		});
+		if (envelope.connector_type !== "http") throw new Error("Expected HTTP envelope");
 		expect(envelope.request.method).toBe("GET");
 	});
 
@@ -73,17 +75,25 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 		).toThrow(/no ToolRegistry binding/);
 	});
 
-	it("unhappy: non-HTTP connector tool throws in Phase 1", () => {
-		const builder = new ConnectorEnvelopeBuilder(setupRegistry());
+	it("unhappy: LLM envelopes remain owned by executeLlm", () => {
+		const registry = setupRegistry();
+		registry.register({
+			name: "llm",
+			connector_id: "llm",
+			connector_type: "llm",
+			default_action: "connector::llm::invoke",
+			default_mode: "approval",
+		});
+		const builder = new ConnectorEnvelopeBuilder(registry);
 		expect(() =>
 			builder.build({
-				tool_name: "query_db",
+				tool_name: "llm",
 				params: { url: "https://example.com" },
 				tenant_id: "t",
 				agent_id: "a",
 				agent_did: "did:web:t:agents:a",
 			}),
-		).toThrow(/Phase 1 supports only HTTP/);
+		).toThrow(/llm|LLM/);
 	});
 
 	it("unhappy: HTTP tool without params.url throws", () => {
@@ -130,6 +140,7 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 			agent_did: "did:web:test:agents:agent-123",
 		});
 
+		if (envelope.connector_type !== "http") throw new Error("Expected HTTP envelope");
 		expect(envelope.request.body).toBe('{"q":"test"}');
 		expect(envelope.request.headers).toEqual({
 			"content-type": "application/json",
@@ -147,6 +158,7 @@ describe("ConnectorEnvelopeBuilder — HTTP thin slice (WE2-007)", () => {
 			agent_id: "a",
 			agent_did: "did:web:t:agents:a",
 		});
+		if (envelope.connector_type !== "http") throw new Error("Expected HTTP envelope");
 		expect(envelope.request.body).toBeUndefined();
 		expect(envelope.request.headers).toBeUndefined();
 		expect(envelope.request.query_params).toBeUndefined();
