@@ -14,6 +14,9 @@ import {
 	type Transport,
 } from "@mariozechner/pi-ai";
 import { agentLoop, agentLoopContinue } from "./agent-loop.js";
+import type { ToolRegistry } from "./connector/tool-registry.js";
+import type { ConnectorContext } from "./connector/types.js";
+import type { ConnectorExecutor } from "./governance.js";
 import type {
 	AgentContext,
 	AgentEvent,
@@ -91,6 +94,26 @@ export interface AgentOptions {
 	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
 	 */
 	maxRetryDelayMs?: number;
+
+	/**
+	 * Connector executor used for LLM dispatch when `connectorContext.connector_mode`
+	 * is `"proxy"`, and for per-tool proxy dispatch when `toolRegistry` binds a tool
+	 * with `default_mode: "proxy"`. Forwarded to `AgentLoopConfig.connectorProvider`.
+	 */
+	connectorProvider?: ConnectorExecutor;
+
+	/**
+	 * Identity/context for connector envelopes (tenant_id, agent_id, agent_did,
+	 * connector_mode). Forwarded to `AgentLoopConfig.connectorContext`.
+	 */
+	connectorContext?: ConnectorContext;
+
+	/**
+	 * Registry of per-tool connector bindings. Tools bound with `default_mode:
+	 * "proxy"` dispatch through `connectorProvider`; `"approval"` or unregistered
+	 * tools run locally. Forwarded to `AgentLoopConfig.toolRegistry`.
+	 */
+	toolRegistry?: ToolRegistry;
 }
 
 export class Agent {
@@ -122,6 +145,9 @@ export class Agent {
 	private _thinkingBudgets?: ThinkingBudgets;
 	private _transport: Transport;
 	private _maxRetryDelayMs?: number;
+	private _connectorProvider?: ConnectorExecutor;
+	private _connectorContext?: ConnectorContext;
+	private _toolRegistry?: ToolRegistry;
 
 	constructor(opts: AgentOptions = {}) {
 		this._state = { ...this._state, ...opts.initialState };
@@ -135,6 +161,9 @@ export class Agent {
 		this._thinkingBudgets = opts.thinkingBudgets;
 		this._transport = opts.transport ?? "sse";
 		this._maxRetryDelayMs = opts.maxRetryDelayMs;
+		this._connectorProvider = opts.connectorProvider;
+		this._connectorContext = opts.connectorContext;
+		this._toolRegistry = opts.toolRegistry;
 	}
 
 	/**
@@ -443,6 +472,9 @@ export class Agent {
 				return this.dequeueSteeringMessages();
 			},
 			getFollowUpMessages: async () => this.dequeueFollowUpMessages(),
+			connectorProvider: this._connectorProvider,
+			connectorContext: this._connectorContext,
+			toolRegistry: this._toolRegistry,
 		};
 
 		let partial: AgentMessage | null = null;
